@@ -4,14 +4,20 @@
   "keywords": [
     "pi-package"
   ],
+  "workspaces": [
+    "extensions/stratum"
+  ],
   "type": "module",
   "scripts": {
     "check": "npm run typecheck && npm run lint",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings extensions"
+    "lint": "oxlint --deny-warnings extensions",
+    "lint:fix": "oxlint --fix extensions",
+    "effect:patch": "effect-tsgo patch"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "@effect/tsgo": "0.24.3",
     "@types/node": "26.1.2",
     "oxlint": "1.76.0",
     "typescript": "7.0.2"
