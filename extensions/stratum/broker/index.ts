@@ -1,5 +1,5 @@
 import { NodeServices, NodeSocketServer } from "@effect/platform-node";
-import { Effect, Layer, Option, Schema, pipe } from "effect";
+import { Effect, Layer, Option, Schema, Stream, pipe } from "effect";
 import { Headers } from "effect/unstable/http";
 import {
   Rpc,
@@ -8,6 +8,7 @@ import {
   RpcServer,
 } from "effect/unstable/rpc";
 import { rmSync } from "node:fs";
+import { Activity } from "#s/capabilities/activity";
 import { Shell } from "#s/capabilities/shell";
 import { Connection } from "#s/common/connection";
 import { Session } from "#s/common/session";
@@ -47,7 +48,18 @@ export const WaitRpc = Rpc.make("Resource.Wait", {
 
 const WaitRpcs = RpcGroup.make(WaitRpc).middleware(Session.Middleware);
 
-export const Rpcs = WaitRpcs.merge(Shell.Rpcs);
+export const ClientMessage = Schema.Union([Activity.Changed]);
+
+export const WatchRpc = Rpc.make("Client.Watch", {
+  success: ClientMessage,
+  stream: true,
+});
+
+const WatchRpcs = RpcGroup.make(WatchRpc).middleware(Session.Middleware);
+
+export const Rpcs = WatchRpcs.merge(WaitRpcs)
+  .merge(Activity.Rpcs)
+  .merge(Shell.Rpcs);
 
 const header = Effect.fn("Broker.__header")(function* (
   headers: Headers.Headers,
@@ -112,6 +124,23 @@ const waitHandlers = WaitRpcs.toLayer(
   ),
 );
 
+const watchHandlers = WatchRpcs.toLayer(
+  Activity.Service.pipe(
+    Effect.map((activity) =>
+      WatchRpcs.of({
+        "Client.Watch": () =>
+          Stream.unwrap(
+            Session.Current.pipe(
+              Effect.map(({ id }) =>
+                activity.watch(Activity.Owner.make(`session:${id.value}`)),
+              ),
+            ),
+          ),
+      }),
+    ),
+  ),
+);
+
 const removeSocket = Effect.fn("Broker.__removeSocket")(function* (
   path: string,
 ) {
@@ -147,9 +176,16 @@ export const layer = (options: Options) => {
     Layer.provide(NodeServices.layer),
   );
 
+  const services = Layer.merge(shell, Activity.layer);
+
   const handlers = pipe(
-    Layer.merge(Shell.handlers, waitHandlers),
-    Layer.provide(shell),
+    Layer.mergeAll(
+      Activity.handlers,
+      Shell.handlers,
+      waitHandlers,
+      watchHandlers,
+    ),
+    Layer.provide(services),
   );
 
   return pipe(
