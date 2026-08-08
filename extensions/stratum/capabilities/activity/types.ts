@@ -1,14 +1,7 @@
 import { Schema } from "effect";
+import { Owner } from "#s/common/owner";
 
 const nonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-
-export class Owner extends Schema.brand("Activity.Owner")(
-  Schema.TemplateLiteral([
-    Schema.NonEmptyString,
-    ":",
-    Schema.NonEmptyString,
-  ]),
-) {}
 
 export class ID extends Schema.brand("Activity.ID")(Schema.NonEmptyString) {}
 

@@ -1,9 +1,10 @@
 import { NodeSocket } from "@effect/platform-node";
-import { Context, Effect, Layer, pipe, Schema } from "effect";
+import { Context, Effect, Layer, pipe, Schema, Stream } from "effect";
 import path from "node:path";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
 import { Broker } from "#s/broker";
+import { Heartbeat } from "#s/capabilities/heartbeat";
 import { Shell } from "#s/capabilities/shell";
 import { Connection } from "#s/common/connection";
 import { Session } from "#s/common/session";
@@ -21,6 +22,21 @@ const ShellSnapshotInput = Shell.Snapshot.mapFields((fields) => ({
 }));
 
 export type Interface = Readonly<{
+  heartbeatStart: (
+    request: typeof Heartbeat.StartPayload.Type,
+  ) => Effect.Effect<
+    Heartbeat.Entry,
+    Session.Rejected | RpcClientError
+  >;
+  heartbeatGet: Effect.Effect<
+    Heartbeat.Entry | null,
+    Session.Rejected | RpcClientError
+  >;
+  heartbeatStop: Effect.Effect<void, Session.Rejected | RpcClientError>;
+  watch: Stream.Stream<
+    typeof Broker.ClientMessage.Type,
+    Session.Rejected | RpcClientError
+  >;
   shellOpen: (
     request: typeof ShellOpenInput.Type,
   ) => Effect.Effect<
@@ -97,6 +113,20 @@ export const layer = (options: Options) =>
           [Session.IDHeader]: options.sessionId.value,
           [Session.ClientTokenHeader]: options.clientToken,
         };
+        const heartbeatStart: Interface["heartbeatStart"] = Effect.fn(
+          "Client.heartbeatStart",
+        )(function* (request) {
+          return yield* rpc["Heartbeat.Start"](request, { headers });
+        });
+        const heartbeatGet: Interface["heartbeatGet"] = rpc[
+          "Heartbeat.Get"
+        ](undefined, { headers });
+        const heartbeatStop: Interface["heartbeatStop"] = rpc[
+          "Heartbeat.Stop"
+        ](undefined, { headers });
+        const watch: Interface["watch"] = rpc["Client.Watch"](undefined, {
+          headers,
+        });
         const shellOpen: Interface["shellOpen"] = Effect.fn("Client.shellOpen")(
           function* (request) {
             return yield* rpc["Shell.Open"](
@@ -150,6 +180,10 @@ export const layer = (options: Options) =>
           return yield* rpc["Shell.Signal"](request, { headers });
         });
         return Service.of({
+          heartbeatStart,
+          heartbeatGet,
+          heartbeatStop,
+          watch,
           shellOpen,
           shellSnapshot,
           wait,

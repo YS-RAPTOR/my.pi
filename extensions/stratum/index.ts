@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export { Broker } from "./broker/index.ts";
 export { Activity } from "./capabilities/activity/index.ts";
+export { Heartbeat } from "./capabilities/heartbeat/index.ts";
 export { Shell } from "./capabilities/shell/index.ts";
 export { Client } from "./client/index.ts";
 export { Connection } from "./common/connection.ts";

@@ -1,8 +1,9 @@
 import { Effect } from "effect";
+import { Owner } from "#s/common/owner";
 import { Session } from "#s/common/session";
 import { Rpcs } from "./rpc.ts";
 import { Service } from "./service.ts";
-import { Activate, Owner, Release, ReleaseOwner } from "./types.ts";
+import { Activate, Release, ReleaseOwner } from "./types.ts";
 
 const currentOwner = Session.Current.pipe(
   Effect.map(({ id }) => Owner.make(`session:${id.value}`)),

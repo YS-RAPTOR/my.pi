@@ -8,12 +8,12 @@ import {
   SubscriptionRef,
   pipe,
 } from "effect";
+import { Owner } from "#s/common/owner";
 import {
   Activate,
   Changed,
   Claim,
   ID,
-  Owner,
   Release,
   ReleaseOwner,
   Snapshot,

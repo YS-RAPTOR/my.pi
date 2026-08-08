@@ -9,8 +9,10 @@ import {
 } from "effect/unstable/rpc";
 import { rmSync } from "node:fs";
 import { Activity } from "#s/capabilities/activity";
+import { Heartbeat } from "#s/capabilities/heartbeat";
 import { Shell } from "#s/capabilities/shell";
 import { Connection } from "#s/common/connection";
+import { Owner } from "#s/common/owner";
 import { Session } from "#s/common/session";
 import { Config } from "#s/config";
 
@@ -48,7 +50,11 @@ export const WaitRpc = Rpc.make("Resource.Wait", {
 
 const WaitRpcs = RpcGroup.make(WaitRpc).middleware(Session.Middleware);
 
-export const ClientMessage = Schema.Union([Activity.Changed]);
+export const ClientMessage = Schema.Union([
+  Activity.Changed,
+  Heartbeat.Changed,
+  Heartbeat.Triggered,
+]);
 
 export const WatchRpc = Rpc.make("Client.Watch", {
   success: ClientMessage,
@@ -59,6 +65,7 @@ const WatchRpcs = RpcGroup.make(WatchRpc).middleware(Session.Middleware);
 
 export const Rpcs = WatchRpcs.merge(WaitRpcs)
   .merge(Activity.Rpcs)
+  .merge(Heartbeat.Rpcs)
   .merge(Shell.Rpcs);
 
 const header = Effect.fn("Broker.__header")(function* (
@@ -125,20 +132,24 @@ const waitHandlers = WaitRpcs.toLayer(
 );
 
 const watchHandlers = WatchRpcs.toLayer(
-  Activity.Service.pipe(
-    Effect.map((activity) =>
-      WatchRpcs.of({
-        "Client.Watch": () =>
-          Stream.unwrap(
-            Session.Current.pipe(
-              Effect.map(({ id }) =>
-                activity.watch(Activity.Owner.make(`session:${id.value}`)),
-              ),
-            ),
+  Effect.gen(function* () {
+    const activity = yield* Activity.Service;
+    const heartbeat = yield* Heartbeat.Service;
+    return WatchRpcs.of({
+      "Client.Watch": () =>
+        Stream.unwrap(
+          Session.Current.pipe(
+            Effect.map(({ id }) => {
+              const owner = Owner.make(`session:${id.value}`);
+              return Stream.merge(
+                activity.watch(owner),
+                heartbeat.watch(owner),
+              );
+            }),
           ),
-      }),
-    ),
-  ),
+        ),
+    });
+  }),
 );
 
 const removeSocket = Effect.fn("Broker.__removeSocket")(function* (
@@ -176,11 +187,14 @@ export const layer = (options: Options) => {
     Layer.provide(NodeServices.layer),
   );
 
-  const services = Layer.merge(shell, Activity.layer);
+  const activity = Activity.layer;
+  const heartbeat = Heartbeat.layer.pipe(Layer.provide(activity));
+  const services = Layer.mergeAll(shell, activity, heartbeat);
 
   const handlers = pipe(
     Layer.mergeAll(
       Activity.handlers,
+      Heartbeat.handlers,
       Shell.handlers,
       waitHandlers,
       watchHandlers,
