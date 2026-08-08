@@ -1,14 +1,30 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { NodeFileSystem, NodePath } from "@effect/platform-node";
+import { Effect, Layer, ManagedRuntime } from "effect";
+import { Config } from "./config.ts";
+import { Pi } from "./pi/index.ts";
 
-export { Broker } from "./broker/index.ts";
-export { Activity } from "./capabilities/activity/index.ts";
-export { Heartbeat } from "./capabilities/heartbeat/index.ts";
-export { Shell } from "./capabilities/shell/index.ts";
-export { Client } from "./client/index.ts";
-export { Connection } from "./common/connection.ts";
-export { Session } from "./common/session.ts";
-export { Config } from "./config/index.ts";
+const platform = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
-const Stratum = (_pi: ExtensionAPI): void => {};
+export const layer = (pi: ExtensionAPI) =>
+  Layer.mergeAll(
+    Config.layer.pipe(Layer.provide(platform)),
+    Pi.Host.layer(pi),
+    Pi.Contributions.layer,
+    Pi.Hooks.layer,
+  );
 
+const Stratum = async (pi: ExtensionAPI): Promise<void> => {
+  const runtime = ManagedRuntime.make(layer(pi));
+  await runtime.runPromise(
+    Effect.gen(function* () {
+      yield* Pi.Contributions.register(pi);
+      yield* Pi.Hooks.register(pi);
+    }),
+  );
+  pi.on("session_shutdown", () => runtime.dispose());
+};
+
+export { Config } from "./config.ts";
+export { Pi } from "./pi/index.ts";
 export default Stratum;

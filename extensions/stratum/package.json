@@ -7,9 +7,8 @@
   ],
   "type": "module",
   "imports": {
-    "#s": "./index.ts",
-    "#s/common/*": "./common/*.ts",
-    "#s/*": "./*/index.ts"
+    "#s/*": "./*/index.ts",
+    "#s/config": "./config.ts"
   },
   "scripts": {
     "check": "npm run typecheck && npm run lint",
