@@ -17,7 +17,8 @@
     "effect:patch": "effect-tsgo patch"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "@earendil-works/pi-tui": "0.84.0",
     "@effect/tsgo": "0.24.3",
     "@types/node": "26.1.2",
     "oxlint": "1.76.0",
