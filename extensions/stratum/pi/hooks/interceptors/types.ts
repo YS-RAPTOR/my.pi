@@ -4,7 +4,38 @@ const AgentMessage = Schema.Unknown;
 const BranchEntry = Schema.Unknown;
 const CompactionPreparation = Schema.Unknown;
 const ImageContent = Schema.Unknown;
-const SystemPromptOptions = Schema.Unknown;
+const SourceInfo = Schema.Struct({
+  path: Schema.String,
+  source: Schema.String,
+  scope: Schema.Literals(["user", "project", "temporary"]),
+  origin: Schema.Literals(["package", "top-level"]),
+  baseDir: Schema.optionalKey(Schema.String),
+});
+const Skill = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+  filePath: Schema.String,
+  baseDir: Schema.String,
+  sourceInfo: SourceInfo,
+  disableModelInvocation: Schema.Boolean,
+});
+const SystemPromptOptions = Schema.Struct({
+  customPrompt: Schema.optionalKey(Schema.String),
+  selectedTools: Schema.optionalKey(Schema.Array(Schema.String)),
+  toolSnippets: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  promptGuidelines: Schema.optionalKey(Schema.Array(Schema.String)),
+  appendSystemPrompt: Schema.optionalKey(Schema.String),
+  cwd: Schema.String,
+  contextFiles: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        content: Schema.String,
+      }),
+    ),
+  ),
+  skills: Schema.optionalKey(Schema.Array(Skill)),
+});
 const TreePreparation = Schema.Unknown;
 const Usage = Schema.Unknown;
 

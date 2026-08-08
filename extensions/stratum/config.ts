@@ -1,11 +1,16 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 
+const enabled = Schema.Boolean.pipe(
+  Schema.withDecodingDefault(Effect.succeed(true)),
+);
+
 export const schema = Schema.Struct({
   "better-skills": Schema.Struct({
-    enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(true)),
-    ),
+    enabled,
+    inline: enabled,
+    gating: enabled,
+    expansion: enabled,
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 
