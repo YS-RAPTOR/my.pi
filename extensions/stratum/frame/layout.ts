@@ -12,6 +12,13 @@ type RootOptions = Readonly<{
   sidebar?: Component;
 }>;
 
+class SidebarScrollView extends ScrollView {
+  override scrollBy(lines: number): number {
+    super.scrollBy(lines);
+    return 0;
+  }
+}
+
 export const createRoot = (
   slots: FrameSlots,
   theme: Theme,
@@ -52,6 +59,11 @@ export const createRoot = (
 
   if (!options.sidebar) return main;
 
+  // ScrollView containment only stops ancestor chaining; Pi still sends any
+  // leftover delta to the primary transcript. Report the wheel input as fully
+  // consumed after giving the sidebar a chance to scroll.
+  const sidebar = new SidebarScrollView(options.sidebar);
+
   return new HStack([
     {
       component: main,
@@ -61,7 +73,7 @@ export const createRoot = (
       minSize: 1,
     },
     {
-      component: options.sidebar,
+      component: sidebar,
       basis: SIDEBAR_WIDTH,
       grow: 0,
       shrink: 0,

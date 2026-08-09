@@ -9,18 +9,28 @@ import {
   Text,
   VStack,
 } from "@earendil-works/pi-tui";
+import type { Entry as HeartbeatEntry } from "../../features/heartbeat/types.ts";
+import { modelFromEntry as heartbeatModelFromEntry } from "../../features/heartbeat/tools/get.ts";
+import { detailsFromEntry as heartbeatDetailsFromEntry } from "../../features/heartbeat/tools/shared.ts";
 import type { ResourceSummary } from "../../features/shell/types.ts";
 import { detailsFromSummary } from "../../features/shell/tools/inspect.ts";
 import { modelFromDetails } from "../../features/shell/tools/list.ts";
-import { ShellResourceList } from "../../features/shell/tools/rendering/index.ts";
+import {
+  ShellResource,
+  ShellResourceList,
+} from "../../features/shell/tools/rendering/index.ts";
 import { Section, SECTION_HEIGHT } from "./section.ts";
 
 export const SIDEBAR_WIDTH = 42;
 export const SIDEBAR_BREAKPOINT = 75;
 export const SIDEBAR_PADDING_LEFT = 0;
+const HEARTBEAT_SECTION_HEIGHT = 9;
 
 type ThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
-type State = { thinkingLevel: ThinkingLevel };
+type State = {
+  thinkingLevel: ThinkingLevel;
+  heartbeatActive: boolean;
+};
 
 class Divider implements Component {
   private readonly theme: Theme;
@@ -49,8 +59,11 @@ export class Sidebar extends HStack {
   private readonly theme: Theme;
   private readonly state: State;
   private readonly activeShells: Section;
+  private readonly heartbeatHost: Container;
+  private readonly heartbeatResource: ShellResource.Component;
   private readonly listHost: Container;
   private readonly resourceList: ShellResourceList.Component;
+  private heartbeat: HeartbeatEntry | null = null;
   private resources: ReadonlyArray<ResourceSummary> = [];
 
   constructor(
@@ -58,12 +71,32 @@ export class Sidebar extends HStack {
     getHeight: () => number,
     thinkingLevel: ExtensionContext["thinkingLevel"],
   ) {
-    const state: State = { thinkingLevel: thinkingLevel ?? "off" };
+    const state: State = {
+      thinkingLevel: thinkingLevel ?? "off",
+      heartbeatActive: false,
+    };
+    const heartbeatHost = new Container();
+    const heartbeatResource = new ShellResource.Component();
+    const heartbeatSection = new Section(
+      "Heartbeat",
+      heartbeatHost,
+      theme,
+      HEARTBEAT_SECTION_HEIGHT,
+    );
     const listHost = new Container();
     const resourceList = new ShellResourceList.Component();
     const activeShells = new Section("Active shells", listHost, theme);
     const sections = new VStack(
       [
+        {
+          component: heartbeatSection,
+          basis: HEARTBEAT_SECTION_HEIGHT,
+          grow: 0,
+          shrink: 1,
+          minSize: 3,
+          maxSize: HEARTBEAT_SECTION_HEIGHT,
+          visible: () => state.heartbeatActive,
+        },
         {
           component: activeShells,
           basis: SECTION_HEIGHT,
@@ -94,6 +127,8 @@ export class Sidebar extends HStack {
     this.theme = theme;
     this.state = state;
     this.activeShells = activeShells;
+    this.heartbeatHost = heartbeatHost;
+    this.heartbeatResource = heartbeatResource;
     this.listHost = listHost;
     this.resourceList = resourceList;
     this.rebuild();
@@ -103,9 +138,16 @@ export class Sidebar extends HStack {
     this.state.thinkingLevel = level ?? "off";
   }
 
+  updateHeartbeat(entry: HeartbeatEntry | null): void {
+    this.heartbeat = entry;
+    this.state.heartbeatActive = entry !== null;
+    this.rebuildHeartbeat();
+    super.invalidate();
+  }
+
   updateShells(resources: ReadonlyArray<ResourceSummary>): void {
     this.resources = resources;
-    this.rebuild();
+    this.rebuildShells();
     super.invalidate();
   }
 
@@ -115,6 +157,24 @@ export class Sidebar extends HStack {
   }
 
   private rebuild(): void {
+    this.rebuildHeartbeat();
+    this.rebuildShells();
+  }
+
+  private rebuildHeartbeat(): void {
+    this.heartbeatHost.clear();
+    if (this.heartbeat === null) return;
+    this.heartbeatResource.update(
+      heartbeatModelFromEntry(
+        heartbeatDetailsFromEntry(this.heartbeat),
+        true,
+      ),
+      this.theme,
+    );
+    this.heartbeatHost.addChild(this.heartbeatResource);
+  }
+
+  private rebuildShells(): void {
     const count = this.resources.length;
     this.activeShells.setTitle(
       `Active shells${count > 0 ? ` · ${count}` : ""}`,

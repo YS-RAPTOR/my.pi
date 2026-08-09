@@ -5,12 +5,13 @@ import {
   Layer,
   Option,
   Predicate,
+  PubSub,
   Ref,
-  Schedule,
   Scope,
   Stream,
   pipe,
 } from "effect";
+import { Heartbeat } from "#s/features/heartbeat";
 import { Shell } from "#s/features/shell";
 import { Pi } from "#s/pi";
 import { Footer } from "./footer/index.ts";
@@ -30,10 +31,36 @@ const runtime = Layer.effectDiscard(
     const barriers = yield* Pi.Hooks.Barriers.Service;
     const notifications = yield* Pi.Hooks.Notifications.Service;
     const footer = yield* Footer.Service;
+    const heartbeat = yield* Heartbeat.Service;
     const shell = yield* Shell.Service;
     const scope = yield* Scope.Scope;
     const active = yield* Ref.make<Option.Option<Active>>(Option.none());
+    const refreshes = yield* PubSub.sliding<void>(1);
     const warned = yield* Ref.make(false);
+
+    const requestRefresh = PubSub.publish(refreshes, undefined).pipe(
+      Effect.asVoid,
+    );
+    const refreshSidebar = Effect.gen(function* () {
+      const current = yield* Ref.get(active);
+      if (Option.isNone(current)) return;
+      const latest = yield* Effect.all({
+        heartbeat: heartbeat.get,
+        shells: shell.list(true),
+      });
+      yield* Effect.sync(() => {
+        current.value.sidebar.updateHeartbeat(latest.heartbeat);
+        current.value.sidebar.updateShells(latest.shells);
+        current.value.tui.requestRender();
+      });
+    }).pipe(Effect.withSpan("Frame.refreshSidebar"));
+
+    yield* pipe(
+      Stream.fromPubSub(refreshes),
+      Stream.runForEach(() => refreshSidebar),
+      Effect.forkIn(scope, { startImmediately: true }),
+    );
+    yield* Effect.addFinalizer(() => PubSub.shutdown(refreshes));
 
     const restore = Effect.fn("Frame.__restore")(function* (current: Active) {
       yield* current.stopPolling;
@@ -71,19 +98,20 @@ const runtime = Layer.effectDiscard(
         () => result.tui.terminal.rows,
         thinkingLevel,
       );
+      const initial = yield* Effect.all({
+        heartbeat: heartbeat.get,
+        shells: shell.list(true),
+      });
+      yield* Effect.sync(() => {
+        sidebar.updateHeartbeat(initial.heartbeat);
+        sidebar.updateShells(initial.shells);
+      });
       const frameRoot = createRoot(result.slots, theme, { sidebar });
       const cleanupRoot = createRoot(result.slots, theme);
       const polling = yield* pipe(
-        Stream.fromEffectSchedule(
-          shell.list(true),
-          Schedule.spaced("30 seconds"),
-        ),
-        Stream.runForEach((resources) =>
-          Effect.sync(() => {
-            sidebar.updateShells(resources);
-            result.tui.requestRender();
-          }),
-        ),
+        Effect.sleep("30 seconds"),
+        Effect.andThen(requestRefresh),
+        Effect.forever,
         Effect.forkIn(scope, { startImmediately: true }),
       );
       const next: Active = {
@@ -99,18 +127,11 @@ const runtime = Layer.effectDiscard(
       }).pipe(Effect.onError(() => restore(next)));
     }).pipe(Effect.withSpan("Frame.activate"));
 
-    yield* notifications.listen(["tool_execution_end"], ({ toolName }) => {
-      if (!toolName.startsWith("shell_")) return Effect.void;
-      return Effect.gen(function* () {
-        const current = yield* Ref.get(active);
-        if (Option.isNone(current)) return;
-        const resources = yield* shell.list(true);
-        yield* Effect.sync(() => {
-          current.value.sidebar.updateShells(resources);
-          current.value.tui.requestRender();
-        });
-      });
-    });
+    yield* notifications.listen(["tool_execution_end"], ({ toolName }) =>
+      toolName.startsWith("shell_") || toolName.startsWith("heartbeat_")
+        ? requestRefresh
+        : Effect.void,
+    );
     yield* notifications.listen(["thinking_level_select"], ({ level }) =>
       Effect.gen(function* () {
         const current = yield* Ref.get(active);

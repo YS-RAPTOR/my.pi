@@ -9,7 +9,6 @@ import {
 } from "@earendil-works/pi-tui";
 
 export const SECTION_HEIGHT = 16;
-const SECTION_BODY_HEIGHT = SECTION_HEIGHT - 1;
 const SECTION_PADDING_X = 1;
 
 const backgroundLine = (
@@ -49,10 +48,12 @@ class Header implements Component {
 class BackgroundContent implements Component {
   private readonly content: Component;
   private readonly theme: Theme;
+  private readonly height: number;
 
-  constructor(content: Component, theme: Theme) {
+  constructor(content: Component, theme: Theme, height: number) {
     this.content = content;
     this.theme = theme;
+    this.height = height;
   }
 
   invalidate(): void {
@@ -65,7 +66,7 @@ class BackgroundContent implements Component {
     const lines = this.content
       .render(contentWidth)
       .map((line) => `${" ".repeat(SECTION_PADDING_X)}${line}`);
-    while (lines.length < SECTION_BODY_HEIGHT) lines.push("");
+    while (lines.length < this.height) lines.push("");
     return lines.map((line) => backgroundLine(line, safeWidth, this.theme));
   }
 }
@@ -73,14 +74,22 @@ class BackgroundContent implements Component {
 export class Section extends VStack {
   private readonly header: Header;
 
-  constructor(title: string, content: Component, theme: Theme) {
+  constructor(
+    title: string,
+    content: Component,
+    theme: Theme,
+    height = SECTION_HEIGHT,
+  ) {
     const header = new Header(title, theme);
     const scrollContent = new VStack([content, new Spacer(1)]);
-    const body = new ScrollView(new BackgroundContent(scrollContent, theme), {
-      overscroll: "contain",
-      scrollbar: "auto",
-      scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
-    });
+    const body = new ScrollView(
+      new BackgroundContent(scrollContent, theme, Math.max(0, height - 1)),
+      {
+        overscroll: "chain",
+        scrollbar: "auto",
+        scrollbarStyle: (text) => theme.bg("scrollbarThumb", text),
+      },
+    );
     super([
       { component: header, basis: 1, grow: 0, shrink: 0, minSize: 1 },
       {

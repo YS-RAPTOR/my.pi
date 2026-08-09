@@ -65,6 +65,7 @@ const ProcessInfoResultSchema = Schema.Struct({
   process_info: ProcessInfoSchema,
 });
 const WorkspaceResultSchema = Schema.Struct({ root_pane: PaneSchema });
+const AgentStateSchema = Schema.Literals(["working", "idle"]);
 const decodeApiResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ApiResponseSchema),
 );
@@ -75,6 +76,7 @@ const encodeApiRequest = Schema.encodeEffect(
 export type Pane = typeof PaneSchema.Type;
 export type SessionSnapshot = typeof SessionSnapshotSchema.Type;
 export type PaneRead = typeof PaneReadSchema.Type;
+export type AgentState = typeof AgentStateSchema.Type;
 
 export type ProcessInfo = Readonly<{
   shellPid: number | undefined;
@@ -117,6 +119,19 @@ export type Interface = Readonly<{
     socketPath: string,
     paneId: string,
     text: string,
+  ) => Effect.Effect<void, Failure>;
+  reportAgent: (
+    socketPath: string,
+    paneId: string,
+    source: string,
+    agent: string,
+    state: AgentState,
+  ) => Effect.Effect<void, Failure>;
+  releaseAgent: (
+    socketPath: string,
+    paneId: string,
+    source: string,
+    agent: string,
   ) => Effect.Effect<void, Failure>;
   ping: (socketPath: string) => Effect.Effect<void, Failure>;
   stop: (socketPath: string) => Effect.Effect<void, Failure>;
@@ -163,10 +178,7 @@ export const layer = Layer.effect(
               encodeApiRequest({ id: method, method, params }),
               Effect.mapError((cause) =>
                 AttemptFailure.response({
-                  message: messageFrom(
-                    cause,
-                    `${method} request was invalid`,
-                  ),
+                  message: messageFrom(cause, `${method} request was invalid`),
                 }),
               ),
             );
@@ -259,13 +271,14 @@ export const layer = Layer.effect(
             );
           }),
           Effect.scoped,
-          Effect.mapError((cause): AttemptFailure =>
-            Predicate.isTagged(cause, "transport") ||
-            Predicate.isTagged(cause, "response")
-              ? cause
-              : AttemptFailure.transport({
-                  message: messageFrom(cause, `${method} failed`),
-                }),
+          Effect.mapError(
+            (cause): AttemptFailure =>
+              Predicate.isTagged(cause, "transport") ||
+              Predicate.isTagged(cause, "response")
+                ? cause
+                : AttemptFailure.transport({
+                    message: messageFrom(cause, `${method} failed`),
+                  }),
           ),
           Effect.retry({
             while: (failure) => Predicate.isTagged(failure, "transport"),
@@ -279,17 +292,15 @@ export const layer = Layer.effect(
     );
 
     return Service.of({
-      session: Effect.fn("Shell.Herdr.Repo.session")(
-        function* (socketPath) {
-          const result = yield* call(
-            socketPath,
-            "session.snapshot",
-            {},
-            SessionResultSchema,
-          );
-          return result.snapshot;
-        },
-      ),
+      session: Effect.fn("Shell.Herdr.Repo.session")(function* (socketPath) {
+        const result = yield* call(
+          socketPath,
+          "session.snapshot",
+          {},
+          SessionResultSchema,
+        );
+        return result.snapshot;
+      }),
       pane: Effect.fn("Shell.Herdr.Repo.pane")(
         function* (socketPath, terminalId) {
           const result = yield* call(
@@ -334,8 +345,7 @@ export const layer = Layer.effect(
             shellPid: result.process_info.shell_pid,
             foregroundProcessGroup:
               result.process_info.foreground_process_group_id,
-            foregroundProcesses:
-              result.process_info.foreground_processes ?? [],
+            foregroundProcesses: result.process_info.foreground_processes ?? [],
           };
         },
       ),
@@ -360,16 +370,32 @@ export const layer = Layer.effect(
           );
         },
       ),
-      ping: Effect.fn("Shell.Herdr.Repo.ping")(
-        function* (socketPath) {
-          yield* call(socketPath, "ping", {}, Schema.Unknown);
+      reportAgent: Effect.fn("Shell.Herdr.Repo.reportAgent")(
+        function* (socketPath, paneId, source, agent, state) {
+          yield* call(
+            socketPath,
+            "pane.report_agent",
+            { pane_id: paneId, source, agent, state },
+            Schema.Unknown,
+          );
         },
       ),
-      stop: Effect.fn("Shell.Herdr.Repo.stop")(
-        function* (socketPath) {
-          yield* call(socketPath, "server.stop", {}, Schema.Unknown);
+      releaseAgent: Effect.fn("Shell.Herdr.Repo.releaseAgent")(
+        function* (socketPath, paneId, source, agent) {
+          yield* call(
+            socketPath,
+            "pane.release_agent",
+            { pane_id: paneId, source, agent },
+            Schema.Unknown,
+          );
         },
       ),
+      ping: Effect.fn("Shell.Herdr.Repo.ping")(function* (socketPath) {
+        yield* call(socketPath, "ping", {}, Schema.Unknown);
+      }),
+      stop: Effect.fn("Shell.Herdr.Repo.stop")(function* (socketPath) {
+        yield* call(socketPath, "server.stop", {}, Schema.Unknown);
+      }),
     });
   }),
 );
