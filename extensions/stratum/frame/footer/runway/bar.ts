@@ -118,7 +118,7 @@ function renderBar(
     : content;
 }
 
-export function formatResetCountdown(resetAt: number, now: number): string {
+function formatResetCountdown(resetAt: number, now: number): string {
   const seconds = Math.max(0, Math.floor((resetAt - now) / 1_000));
   if (seconds > 86_400) {
     const tenths = Math.max(10, Math.ceil(seconds / 8_640));
@@ -187,14 +187,16 @@ function renderEmpty(
   return `${theme.fg(labelColor, label)} ${renderBar(values, barColor, runwayBackground(theme, weekly), theme, mode)}`;
 }
 
-export function renderUnavailable(theme: Theme, mode: RunwayMode): string {
-  return renderEmpty(theme, mode, "n/a", "muted", "thinkingOff", {
-    usedPercent: 0,
-  });
-}
-
-export function renderError(theme: Theme, mode: RunwayMode): string {
-  return renderEmpty(theme, mode, "error", "error", "thinkingMax", {
-    usedPercent: 100,
-  });
+export function renderProblem(
+  theme: Theme,
+  mode: RunwayMode,
+  problem: "error" | "unavailable",
+): string {
+  return problem === "error"
+    ? renderEmpty(theme, mode, "error", "error", "thinkingMax", {
+        usedPercent: 100,
+      })
+    : renderEmpty(theme, mode, "n/a", "muted", "thinkingOff", {
+        usedPercent: 0,
+      });
 }

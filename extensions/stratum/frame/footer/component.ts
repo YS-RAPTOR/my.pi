@@ -4,23 +4,33 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
-import { cacheComponent } from "./component/cache.ts";
-import { contextComponent } from "./component/context.ts";
-import { costComponent } from "./component/cost.ts";
-import { cwdComponent } from "./component/cwd.ts";
-import { modelComponent } from "./component/model.ts";
-import { Runway } from "./component/runway/index.ts";
-import { renderStatuses } from "./component/statuses.ts";
-import { tokensComponent } from "./component/tokens.ts";
-import type { FooterVariant } from "./component/types.ts";
+import {
+  cache,
+  context,
+  cost,
+  cwd,
+  model,
+  statuses,
+  tokens,
+  type FooterVariant,
+} from "./parts.ts";
+import type { Interface as Runway } from "./runway/index.ts";
 
-type EntryUsage = {
+export type View = Readonly<{
+  sessionManager: ExtensionContext["sessionManager"];
+  modelRegistry: ExtensionContext["modelRegistry"];
+  model: ExtensionContext["model"];
+  thinkingLevel: ExtensionContext["thinkingLevel"];
+  contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
+}>;
+
+type EntryUsage = Readonly<{
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
   cost: { total: number };
-};
+}>;
 
 type UsageTotals = {
   input: number;
@@ -31,26 +41,32 @@ type UsageTotals = {
   latestCacheHitRate: number | undefined;
 };
 
-type RowItem = {
+type RowItem = Readonly<{
   key: string;
   side: "left" | "right";
-  variants: readonly FooterVariant[];
-};
+  variants: ReadonlyArray<FooterVariant>;
+}>;
 
-type Degradation = {
+type Degradation = Readonly<{
   key: string;
   through: string;
-};
+}>;
 
-function addUsage(totals: UsageTotals, usage: EntryUsage): void {
+const item = (
+  key: string,
+  side: RowItem["side"],
+  variants: ReadonlyArray<FooterVariant>,
+): RowItem => ({ key, side, variants });
+
+const addUsage = (totals: UsageTotals, usage: EntryUsage): void => {
   totals.input += usage.input;
   totals.output += usage.output;
   totals.cacheRead += usage.cacheRead;
   totals.cacheWrite += usage.cacheWrite;
   totals.cost += usage.cost.total;
-}
+};
 
-function collectUsage(ctx: ExtensionContext): UsageTotals {
+const collectUsage = (view: View): UsageTotals => {
   const totals: UsageTotals = {
     input: 0,
     output: 0,
@@ -59,7 +75,7 @@ function collectUsage(ctx: ExtensionContext): UsageTotals {
     cost: 0,
     latestCacheHitRate: undefined,
   };
-  for (const entry of ctx.sessionManager.getEntries()) {
+  for (const entry of view.sessionManager.getEntries()) {
     if (entry.type === "message" && entry.message.role === "assistant") {
       const usage = entry.message.usage;
       addUsage(totals, usage);
@@ -80,19 +96,19 @@ function collectUsage(ctx: ExtensionContext): UsageTotals {
     }
   }
   return totals;
-}
+};
 
-function subscriptionBacked(ctx: ExtensionContext): boolean {
-  const model = ctx.model;
-  if (!model) return false;
-  if (model.provider === "kimi-coding") return true;
-  const oauth = ctx.modelRegistry.getProvider(model.provider)?.auth.oauth;
+const subscriptionBacked = (view: View): boolean => {
+  const selected = view.model;
+  if (!selected) return false;
+  if (selected.provider === "kimi-coding") return true;
+  const oauth = view.modelRegistry.getProvider(selected.provider)?.auth.oauth;
   return (
-    ctx.modelRegistry.isUsingOAuth(model) && oauth?.isSubscription === true
+    view.modelRegistry.isUsingOAuth(selected) && oauth?.isSubscription === true
   );
-}
+};
 
-function align(left: string, right: string, width: number): string {
+const align = (left: string, right: string, width: number): string => {
   if (!left) {
     return `${" ".repeat(Math.max(0, width - visibleWidth(right)))}${right}`;
   }
@@ -101,14 +117,14 @@ function align(left: string, right: string, width: number): string {
     Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
   );
   return `${left}${padding}${right}`;
-}
+};
 
-function renderRow(
-  items: readonly RowItem[],
+const renderRow = (
+  items: ReadonlyArray<RowItem>,
   width: number,
-  degradations: readonly Degradation[],
-  shrinkOrder: readonly string[],
-): string {
+  degradations: ReadonlyArray<Degradation>,
+  shrinkOrder: ReadonlyArray<string>,
+): string => {
   const selected = items
     .filter((item) => item.variants.length)
     .map((item) => ({
@@ -152,18 +168,26 @@ function renderRow(
       .filter(Boolean)
       .join(" ");
   return align(renderSide("left"), renderSide("right"), width);
-}
+};
 
 export class FrameFooter implements Component {
+  private readonly getView: () => View;
+  private readonly theme: Theme;
+  private readonly footerData: ReadonlyFooterDataProvider;
+  private readonly runway: Runway;
   private readonly unsubscribeBranch: () => void;
 
   constructor(
-    private readonly getContext: () => ExtensionContext,
-    private readonly theme: Theme,
-    private readonly footerData: ReadonlyFooterDataProvider,
-    private readonly runway: Runway,
+    getView: () => View,
+    theme: Theme,
+    footerData: ReadonlyFooterDataProvider,
+    runway: Runway,
     requestRender: () => void,
   ) {
+    this.getView = getView;
+    this.theme = theme;
+    this.footerData = footerData;
+    this.runway = runway;
     this.unsubscribeBranch = footerData.onBranchChange(requestRender);
   }
 
@@ -173,43 +197,37 @@ export class FrameFooter implements Component {
     this.unsubscribeBranch();
   }
 
-  render(width: number): string[] {
-    const ctx = this.getContext();
-    const usage = collectUsage(ctx);
-    const context = ctx.getContextUsage();
-    const cwd = cwdComponent(
+  render(width: number): Array<string> {
+    const view = this.getView();
+    const usage = collectUsage(view);
+    const contextUsage = view.contextUsage;
+    const cwdVariants = cwd(
       {
-        cwd: ctx.sessionManager.getCwd(),
+        cwd: view.sessionManager.getCwd(),
         home: process.env.HOME ?? process.env.USERPROFILE,
         branch: this.footerData.getGitBranch(),
-        sessionName: ctx.sessionManager.getSessionName(),
+        sessionName: view.sessionManager.getSessionName(),
       },
       this.theme,
     );
-    const model = modelComponent(
+    const modelVariant = model(
       {
-        id: ctx.model?.id,
-        reasoning: ctx.model?.reasoning ?? false,
-        thinkingLevel: ctx.thinkingLevel,
+        id: view.model?.id,
+        reasoning: view.model?.reasoning ?? false,
+        thinkingLevel: view.thinkingLevel,
       },
       this.theme,
     )[0]!;
-    const bottomItems: RowItem[] = [
-      {
-        key: "tokens",
-        side: "left",
-        variants: tokensComponent(
-          {
-            input: usage.input,
-            output: usage.output,
-          },
-          this.theme,
-        ),
-      },
-      {
-        key: "cache",
-        side: "left",
-        variants: cacheComponent(
+    const bottomItems = [
+      item(
+        "tokens",
+        "left",
+        tokens({ input: usage.input, output: usage.output }, this.theme),
+      ),
+      item(
+        "cache",
+        "left",
+        cache(
           {
             read: usage.cacheRead,
             write: usage.cacheWrite,
@@ -217,40 +235,36 @@ export class FrameFooter implements Component {
           },
           this.theme,
         ),
-      },
-      {
-        key: "cost",
-        side: "left",
-        variants: costComponent(
+      ),
+      item(
+        "cost",
+        "left",
+        cost(
           {
             total: usage.cost,
-            subscription: subscriptionBacked(ctx),
+            subscription: subscriptionBacked(view),
           },
           this.theme,
         ),
-      },
-      {
-        key: "context",
-        side: "left",
-        variants: contextComponent(
+      ),
+      item(
+        "context",
+        "left",
+        context(
           {
-            percent: context?.percent ?? null,
+            percent: contextUsage?.percent ?? null,
             contextWindow:
-              context?.contextWindow ?? ctx.model?.contextWindow ?? 0,
+              contextUsage?.contextWindow ?? view.model?.contextWindow ?? 0,
           },
           this.theme,
         ),
-      },
-      {
-        key: "runway",
-        side: "right",
-        variants: this.runway.variants(this.theme),
-      },
+      ),
+      item("runway", "right", this.runway.variants(this.theme)),
     ];
     const top = renderRow(
       [
-        { key: "cwd", side: "left", variants: cwd },
-        { key: "model", side: "right", variants: [model] },
+        item("cwd", "left", cwdVariants),
+        item("model", "right", [modelVariant]),
       ],
       width,
       [{ key: "cwd", through: "last-folder" }],
@@ -268,11 +282,15 @@ export class FrameFooter implements Component {
       ],
       ["runway"],
     );
-    const statuses = renderStatuses(
+    const statusLine = statuses(
       this.footerData.getExtensionStatuses(),
       width,
       this.theme,
     );
-    return [top, ...(bottom ? [bottom] : []), ...(statuses ? [statuses] : [])];
+    return [
+      top,
+      ...(bottom ? [bottom] : []),
+      ...(statusLine ? [statusLine] : []),
+    ];
   }
 }

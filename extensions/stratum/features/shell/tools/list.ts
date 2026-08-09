@@ -38,6 +38,37 @@ export const detailsSchema = Type.Object({
 
 export type Details = Static<typeof detailsSchema>;
 
+export const resourceModel = ShellResource.compose<Input, ResourceDetails>(
+  ShellResource.mode(({ details }) => details?.mode),
+  ShellResource.command(({ details }) => details?.command),
+  ShellResource.metadata("cwd", ({ details }) => details?.cwd),
+  ShellResource.metadata("workspace", ({ details }) => details?.workspace),
+  ShellResource.metadata("output", ({ details }) => details?.outputFile),
+  ShellResource.metadata("started", ({ details }) =>
+    details === undefined ? undefined : Parts.age(details.startedAt),
+  ),
+  ShellResource.footer(
+    ShellFooter.compose(
+      ShellFooter.item(Parts.lifecycleStatus),
+      ShellFooter.item(Parts.exitOutcome),
+      ShellFooter.item(Parts.failureMessage),
+      ShellFooter.trailing(({ details }) => details?.resourceId),
+    ),
+    0,
+  ),
+);
+
+export const modelFromDetails = (
+  details: ResourceDetails,
+): ShellResource.Model =>
+  resourceModel({
+    input: { active: true },
+    result: { content: [], details },
+    details,
+    options: { expanded: false, isPartial: false },
+    isError: false,
+  });
+
 export const renderer = makeShellResourceListRenderer<
   Input,
   Details,
@@ -46,29 +77,11 @@ export const renderer = makeShellResourceListRenderer<
   call: ShellCall.compose(
     ShellCall.name("shell_list"),
     ShellCall.metadata("active", ({ input }) =>
-      input?.active === undefined ? "All" : String(input.active)
+      input?.active === undefined ? "All" : String(input.active),
     ),
   ),
   resources: (details) => details.resources,
-  resource: ShellResource.compose(
-    ShellResource.mode(({ details }) => details?.mode),
-    ShellResource.command(({ details }) => details?.command),
-    ShellResource.metadata("cwd", ({ details }) => details?.cwd),
-    ShellResource.metadata("workspace", ({ details }) => details?.workspace),
-    ShellResource.metadata("output", ({ details }) => details?.outputFile),
-    ShellResource.metadata("started", ({ details }) =>
-      details === undefined ? undefined : Parts.age(details.startedAt)
-    ),
-    ShellResource.footer(
-      ShellFooter.compose(
-        ShellFooter.item(Parts.lifecycleStatus),
-        ShellFooter.item(Parts.exitOutcome),
-        ShellFooter.item(Parts.failureMessage),
-        ShellFooter.trailing(({ details }) => details?.resourceId),
-      ),
-      0,
-    ),
-  ),
+  resource: resourceModel,
   fallbackResult: ShellResult.compose(
     ShellResult.errorContent(),
     ShellResult.empty(({ details, isError }) => {
@@ -96,9 +109,7 @@ const modelContent = (details: Details) => {
   if (details.resources.length === 0) {
     return "No shell resources found.";
   }
-  const blocks: Array<string> = [
-    `${details.resources.length} shell resources`,
-  ];
+  const blocks: Array<string> = [`${details.resources.length} shell resources`];
   for (const resourceDetails of details.resources) {
     blocks.push(resourceModelContent(resourceDetails));
   }
@@ -131,9 +142,7 @@ export const layer = Layer.effectDiscard(
         }
         const details: Details = { resources };
         return {
-          content: [
-            { type: "text" as const, text: modelContent(details) },
-          ],
+          content: [{ type: "text" as const, text: modelContent(details) }],
           details,
         };
       }),

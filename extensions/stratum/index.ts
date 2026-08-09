@@ -4,6 +4,7 @@ import { Effect, Layer, ManagedRuntime, pipe } from "effect";
 import { Config } from "#s/config";
 import { BetterSkills } from "#s/features/better-skills";
 import { Shell } from "#s/features/shell";
+import { Frame } from "#s/frame";
 import { Pi } from "#s/pi";
 
 const platform = NodeServices.layer;
@@ -16,10 +17,15 @@ export const layer = (pi: ExtensionAPI) => {
     Pi.Contributions.layer,
     Pi.Hooks.layer,
   );
+  const shell = pipe(Shell.layer, Layer.provide(dependencies));
   return Layer.mergeAll(
     dependencies,
     pipe(BetterSkills.layer, Layer.provide(dependencies)),
-    pipe(Shell.layer, Layer.provide(dependencies)),
+    shell,
+    pipe(
+      Frame.layer,
+      Layer.provide(Layer.merge(dependencies, shell)),
+    ),
   );
 };
 
@@ -36,5 +42,6 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 
 export { Config } from "#s/config";
 export { Shell } from "#s/features/shell";
+export { Frame } from "#s/frame";
 export { Pi } from "#s/pi";
 export default Stratum;
