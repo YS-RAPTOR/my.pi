@@ -2,7 +2,7 @@ import {
   formatSkillsForPrompt,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
-import { Effect, HashMap, Layer, Option, pipe } from "effect";
+import { Effect, HashMap, Layer, Option, Schema, pipe } from "effect";
 import { Runtime } from "#s/features/better-skills/runtime";
 import { Pi } from "#s/pi";
 import { Catalog } from "./catalog.ts";
@@ -26,6 +26,8 @@ const catalogSkill = (skill: Readonly<{ name: string; filePath: string }>) =>
 
 const commandSkillName = (value: string) =>
   value.startsWith("skill:") ? value.slice(6) : undefined;
+
+const decodePath = Schema.decodeUnknownOption(Schema.String);
 
 const explicitSkillNames = (text: string, inline: boolean) => {
   const slashName = text.match(/^\/skill:([^\s]+)(?:\s+[\s\S]*)?$/)?.[1];
@@ -276,14 +278,17 @@ export const layer = (inlineEnabled: boolean) => pipe(
         "tool_call",
         0,
         Effect.fn("Features.BetterSkills.Gating.toolCall")(function* (event) {
-          const path = event.input["path"];
-          if (event.toolName !== "read" || typeof path !== "string") return;
+          const path = decodePath(event.input["path"]);
+          if (event.toolName !== "read" || Option.isNone(path)) return;
 
           const callback = yield* Pi.Host.Callback;
           const cwd = yield* callback.session.cwd;
           yield* evaluateCommands(cwd);
 
-          const decision = yield* catalog.findByPath({ cwd, path });
+          const decision = yield* catalog.findByPath({
+            cwd,
+            path: path.value,
+          });
           if (
             Option.isNone(decision) ||
             decision.value.state === "model-accessible"

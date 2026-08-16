@@ -6,6 +6,7 @@ import {
   Layer,
   Option,
   Path,
+  Schema,
   pipe,
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -13,18 +14,14 @@ import { Runtime } from "#s/features/better-skills/runtime";
 import { Shell } from "#s/features/better-skills/shell";
 import { Pi } from "#s/pi";
 
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+const errorMessage = (cause: unknown) =>
+  cause instanceof Error ? cause.message : String(cause);
 
-const isTextContent = (
-  value: unknown,
-): value is Record<string, unknown> & { type: "text"; text: string } =>
-  typeof value === "object" &&
-  value !== null &&
-  "type" in value &&
-  value.type === "text" &&
-  "text" in value &&
-  typeof value.text === "string";
+const isTextContent = Schema.is(
+  Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
+);
+const decodePath = Schema.decodeUnknownOption(Schema.String);
+const decodeOffset = Schema.decodeUnknownOption(Schema.Finite);
 
 const skipLines = (text: string, lines: number) => {
   let start = 0;
@@ -121,11 +118,13 @@ export const layer = Layer.effectDiscard(
               yield* callback.session.cwd,
             );
             const skillArguments = arguments_?.trim();
-            return {
+            const result = {
               action: "transform" as const,
               text: skillArguments ? `${block}\n\n${skillArguments}` : block,
-              ...(event.images === undefined ? {} : { images: event.images }),
             };
+            return event.images === undefined
+              ? result
+              : { ...result, images: event.images };
           }),
           Effect.catch((error) =>
             Effect.gen(function* () {
@@ -140,83 +139,87 @@ export const layer = Layer.effectDiscard(
     yield* interceptors.handle(
       "tool_result",
       0,
-      Effect.fn("Features.BetterSkills.Expansion.toolResult")(function* (event) {
-        const path = event.input["path"];
-        if (event.toolName !== "read" || typeof path !== "string") return;
+      Effect.fn("Features.BetterSkills.Expansion.toolResult")(
+        function* (event) {
+          const path = decodePath(event.input["path"]);
+          if (event.toolName !== "read" || Option.isNone(path)) return;
 
-        const host = yield* Pi.Host.Service;
-        const callback = yield* Pi.Host.Callback;
-        const cwd = yield* callback.session.cwd;
-        const requested = path.startsWith("@") ? path.slice(1) : path;
-        const expandedPath = requested.replace(/^~(?=\/|$)/, home);
-        const absolute = paths.resolve(cwd, expandedPath);
-        const canonical = yield* canonicalPath(absolute);
-        const skill = yield* Effect.findFirst(
-          yield* host.session.getCommands,
-          (command) => {
-            if (command.source !== "skill") return Effect.succeed(false);
-            const location = paths.resolve(command.sourceInfo.path);
-            return pipe(
-              canonicalPath(location),
-              Effect.map((candidate) => candidate === canonical),
-            );
-          },
-        );
-        if (Option.isNone(skill)) return;
+          const host = yield* Pi.Host.Service;
+          const callback = yield* Pi.Host.Callback;
+          const cwd = yield* callback.session.cwd;
+          const requested = path.value.startsWith("@")
+            ? path.value.slice(1)
+            : path.value;
+          const expandedPath = requested.replace(/^~(?=\/|$)/, home);
+          const absolute = paths.resolve(cwd, expandedPath);
+          const canonical = yield* canonicalPath(absolute);
+          const skill = yield* Effect.findFirst(
+            yield* host.session.getCommands,
+            (command) => {
+              if (command.source !== "skill") return Effect.succeed(false);
+              const location = paths.resolve(command.sourceInfo.path);
+              return pipe(
+                canonicalPath(location),
+                Effect.map((candidate) => candidate === canonical),
+              );
+            },
+          );
+          if (Option.isNone(skill)) return;
 
-        return yield* pipe(
-          Effect.gen(function* () {
-            const source = yield* files.readFileString(
-              skill.value.sourceInfo.path,
-            );
-            const frontmatter = source.match(
-              /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
-            )?.[0];
-            const offset =
-              typeof event.input["offset"] === "number"
-                ? event.input["offset"]
-                : 1;
-            let remaining = Math.max(
-              0,
-              (frontmatter?.match(/\n/g)?.length ?? 0) - offset + 1,
-            );
-            const content: Array<unknown> = [];
+          return yield* pipe(
+            Effect.gen(function* () {
+              const source = yield* files.readFileString(
+                skill.value.sourceInfo.path,
+              );
+              const frontmatter = source.match(
+                /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
+              )?.[0];
+              const offset = Option.getOrElse(
+                decodeOffset(event.input["offset"]),
+                () => 1,
+              );
+              let remaining = Math.max(
+                0,
+                (frontmatter?.match(/\n/g)?.length ?? 0) - offset + 1,
+              );
+              const content: Array<unknown> = [];
 
-            for (const item of event.content) {
-              if (!isTextContent(item)) {
-                content.push(item);
-                continue;
+              for (const item of event.content) {
+                if (!isTextContent(item)) {
+                  content.push(item);
+                  continue;
+                }
+
+                const skipped = skipLines(item.text, remaining);
+                remaining = skipped.remaining;
+                content.push({
+                  ...item,
+                  text:
+                    item.text.slice(0, skipped.start) +
+                    (yield* interpolate(item.text.slice(skipped.start), cwd)),
+                });
               }
 
-              const skipped = skipLines(item.text, remaining);
-              remaining = skipped.remaining;
-              content.push({
-                ...item,
-                text:
-                  item.text.slice(0, skipped.start) +
-                  (yield* interpolate(item.text.slice(skipped.start), cwd)),
+              return Pi.Hooks.Interceptors.ToolResultEventResult.make({
+                content,
               });
-            }
-
-            return Pi.Hooks.Interceptors.ToolResultEventResult.make({
-              content,
-            });
-          }),
-          Effect.catch((error) =>
-            Effect.succeed(
-              Pi.Hooks.Interceptors.ToolResultEventResult.make({
-                content: [
-                  {
-                    type: "text",
-                    text: errorMessage(error),
-                  },
-                ],
-                isError: true,
-              }),
+            }),
+            Effect.catch((error) =>
+              Effect.succeed(
+                Pi.Hooks.Interceptors.ToolResultEventResult.make({
+                  content: [
+                    {
+                      type: "text",
+                      text: errorMessage(error),
+                    },
+                  ],
+                  isError: true,
+                }),
+              ),
             ),
-          ),
-        );
-      }),
+          );
+        },
+      ),
     );
   }),
 );

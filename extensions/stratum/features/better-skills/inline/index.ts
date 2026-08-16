@@ -8,8 +8,8 @@ import { Runtime } from "#s/features/better-skills/runtime";
 import { Pi } from "#s/pi";
 
 const maxSuggestions = 20;
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+const errorMessage = (cause: unknown) =>
+  cause instanceof Error ? cause.message : String(cause);
 
 type ResolvedReference = Readonly<{
   reference: Runtime.InlineReference;
@@ -63,13 +63,15 @@ export const layer = Layer.effectDiscard(
             ? available
             : fuzzyFilter(available, query, ({ skill }) => skill.name);
 
-          return matches.slice(0, maxSuggestions).map(({ command, skill }) => ({
-            value: `$${skill.name}`,
-            label: `$${skill.name}`,
-            ...(command.description === undefined
-              ? {}
-              : { description: command.description }),
-          })) satisfies Array<AutocompleteItem>;
+          return matches.slice(0, maxSuggestions).map(({ command, skill }) => {
+            const item = {
+              value: `$${skill.name}`,
+              label: `$${skill.name}`,
+            };
+            return command.description === undefined
+              ? item
+              : { ...item, description: command.description };
+          }) satisfies Array<AutocompleteItem>;
         });
 
         const provider = (
@@ -156,14 +158,16 @@ export const layer = Layer.effectDiscard(
               runtime.render(skill, cwd),
             );
             const prompt = rewritePrompt(event.text, resolved);
-            return {
+            const result = {
               action: "transform" as const,
               text:
                 prompt === ""
                   ? blocks.join("\n\n")
                   : `${blocks.join("\n\n")}\n\n${prompt}`,
-              ...(event.images === undefined ? {} : { images: event.images }),
             };
+            return event.images === undefined
+              ? result
+              : { ...result, images: event.images };
           }),
           Effect.catch((error) =>
             Effect.gen(function* () {

@@ -34,11 +34,7 @@ type HandlerRequirements<Type extends InterceptorType> =
 
 export type Handler<Type extends InterceptorType> = (
   event: InterceptorOf<Type>,
-) => Effect.Effect<
-  HandlerResult<Type>,
-  never,
-  HandlerRequirements<Type>
->;
+) => Effect.Effect<HandlerResult<Type>, never, HandlerRequirements<Type>>;
 
 export type RegistrationOf<Type extends InterceptorType> = Readonly<{
   type: Type;
@@ -117,13 +113,11 @@ export const layer = Layer.effect(
               ),
             );
           }
+          // SAFETY: the map key retains the registration's matching interceptor type.
+          const erased = registration as RegistrationOf<Type> & Registration;
           return [
             undefined,
-            HashMap.set(
-              current,
-              type,
-              Chunk.append(existing, registration as unknown as Registration),
-            ),
+            HashMap.set(current, type, Chunk.append(existing, erased)),
           ];
         }),
       );

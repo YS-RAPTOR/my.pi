@@ -64,11 +64,7 @@ export type CommandDefinition<
     >;
     getArgumentCompletions?: (
       argumentPrefix: string,
-    ) => Effect.Effect<
-      CommandCompletions,
-      CompletionError,
-      Host.Service
-    >;
+    ) => Effect.Effect<CommandCompletions, CompletionError, Host.Service>;
   }>;
 
 export type ToolRegistration = ToolDefinition;
@@ -151,68 +147,6 @@ const sortedValues = <Value>(
 
 type RuntimeServices = Host.Service | Service;
 
-type RunPromise = <Value, Error>(
-  effect: Effect.Effect<Value, Error, RuntimeServices>,
-  options?: Effect.RunOptions,
-) => Promise<Value>;
-
-type EffectKey<Source> = {
-  [Key in keyof Source]-?: NonNullable<Source[Key]> extends (
-    ...args: never[]
-  ) => Effect.Effect<unknown, unknown, unknown>
-    ? Key
-    : never;
-}[keyof Source];
-
-type ArgumentsOf<Value> =
-  NonNullable<Value> extends (...args: infer Arguments) => unknown
-    ? Arguments
-    : never;
-
-type Promisify<Value> = Value extends (
-  ...args: infer Arguments
-) => Effect.Effect<infer Success, unknown, unknown>
-  ? (...args: Arguments) => Promise<Success>
-  : Value;
-
-type Promisified<Source, Key extends keyof Source> = {
-  [Current in keyof Source]: Current extends Key
-    ? Promisify<Source[Current]>
-    : Source[Current];
-};
-
-type RunOptions<Source, Key extends keyof Source> = Partial<{
-  [Current in Key]: (
-    ...args: ArgumentsOf<Source[Current]>
-  ) => Effect.RunOptions;
-}>;
-
-const promiseHandlers = <
-  Source extends object,
-  const Keys extends ReadonlyArray<EffectKey<Source>>,
->(
-  runPromise: RunPromise,
-  source: Source,
-  keys: Keys,
-  options: RunOptions<Source, Keys[number]> = {},
-): Promisified<Source, Keys[number]> => {
-  const result = { ...source };
-  for (const key of keys) {
-    const handler = Reflect.get(source, key);
-    if (typeof handler !== "function") continue;
-    const getOptions = Reflect.get(options, key);
-    Reflect.set(result, key, (...args: unknown[]) =>
-      runPromise(
-        Reflect.apply(handler, source, args) as Effect.Effect<unknown, unknown>,
-        typeof getOptions === "function"
-          ? (Reflect.apply(getOptions, options, args) as Effect.RunOptions)
-          : undefined,
-      ),
-    );
-  }
-  return result as Promisified<Source, Keys[number]>;
-};
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -226,6 +160,7 @@ export const layer = Layer.effect(
     const add = Effect.fn("Pi.Contributions.__add")(function* <
       Key extends StateKey,
     >(current: State, contribution: Contribution<Key>) {
+      // SAFETY: each State key owns a HashMap containing RegistrationOf<Key>.
       const registrations = current[contribution.key] as HashMap.HashMap<
         string,
         RegistrationOf<Key>
@@ -237,6 +172,7 @@ export const layer = Layer.effect(
           ),
         );
       }
+      // SAFETY: the computed key is preserved and receives its corresponding registration type.
       return {
         ...current,
         [contribution.key]: HashMap.set(
@@ -276,7 +212,8 @@ export const layer = Layer.effect(
           key: "tools",
           kind: "Tool",
           name: definition.name,
-          registration: definition as unknown as ToolRegistration,
+          // SAFETY: registration erases only the tool's generic detail and error parameters.
+          registration: definition as ToolRegistration,
         });
       },
     );
@@ -289,6 +226,7 @@ export const layer = Layer.effect(
           name,
           registration: {
             name,
+            // SAFETY: registration erases only command-specific error parameters.
             definition: definition as CommandDefinition,
           },
         });
@@ -303,6 +241,7 @@ export const layer = Layer.effect(
           name: customType,
           registration: {
             customType,
+            // SAFETY: the custom type keeps the renderer paired with its original details.
             renderer: renderer as MessageRenderer<unknown>,
           },
         });
@@ -317,6 +256,7 @@ export const layer = Layer.effect(
           name: customType,
           registration: {
             customType,
+            // SAFETY: the custom type keeps the renderer paired with its original entry data.
             renderer: renderer as EntryRenderer<unknown>,
           },
         });
@@ -357,11 +297,20 @@ export const register = Effect.fn("Pi.Contributions.register")(function* (
             callbackContext,
           ),
       } satisfies ToolDefinition;
-      pi.registerTool(
-        promiseHandlers(runPromise, contextual, ["execute"], {
-          execute: (_toolCallId, _parameters, signal) => ({ signal }),
-        }),
-      );
+      pi.registerTool({
+        ...contextual,
+        execute: (toolCallId, parameters, signal, onUpdate, callbackContext) =>
+          runPromise(
+            contextual.execute(
+              toolCallId,
+              parameters,
+              signal,
+              onUpdate,
+              callbackContext,
+            ),
+            { signal },
+          ),
+      });
     }
 
     for (const registration of registrations.commands) {
@@ -373,18 +322,21 @@ export const register = Effect.fn("Pi.Contributions.register")(function* (
             commandContext,
           ),
       } satisfies CommandDefinition;
+      const handler = (args: string, commandContext: ExtensionCommandContext) =>
+        runPromise(contextual.handler(args, commandContext), {
+          signal: commandContext.signal,
+        });
+      const { getArgumentCompletions, ...commandDefinition } = contextual;
       pi.registerCommand(
         registration.name,
-        promiseHandlers(
-          runPromise,
-          contextual,
-          ["handler", "getArgumentCompletions"],
-          {
-            handler: (_args, commandContext) => ({
-              signal: commandContext.signal,
-            }),
-          },
-        ),
+        getArgumentCompletions === undefined
+          ? { ...commandDefinition, handler }
+          : {
+              ...commandDefinition,
+              handler,
+              getArgumentCompletions: (argumentPrefix) =>
+                runPromise(getArgumentCompletions(argumentPrefix)),
+            },
       );
     }
 

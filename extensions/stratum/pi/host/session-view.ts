@@ -6,14 +6,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Cause, Effect, pipe } from "effect";
 
-type AsyncResult<Method extends (...args: never[]) => unknown> = Effect.Effect<
-  Awaited<ReturnType<Method>>,
-  Cause.UnknownError
->;
+type AsyncResult<Method> = Method extends (...args: never[]) => infer Result
+  ? Effect.Effect<Awaited<Result>, Cause.UnknownError>
+  : never;
 
-type SyncResult<Method extends (...args: never[]) => unknown> = Effect.Effect<
-  ReturnType<Method>
->;
+type SyncResult<Method> = Method extends (...args: never[]) => infer Result
+  ? Effect.Effect<Result>
+  : never;
 
 export type Global = Readonly<{
   appendEntry: <Data>(customType: string, data?: Data) => Effect.Effect<void>;
@@ -141,9 +140,7 @@ export const command = (context: ExtensionCommandContext): Command => ({
   ),
 });
 
-export const projectTrust = (
-  context: ProjectTrustContext,
-): ProjectTrust => ({
+export const projectTrust = (context: ProjectTrustContext): ProjectTrust => ({
   cwd: pipe(
     Effect.sync(() => context.cwd),
     Effect.withSpan("Pi.Host.SessionView.ProjectTrust.cwd"),

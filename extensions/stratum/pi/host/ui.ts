@@ -8,7 +8,7 @@ import { Cause, Effect, pipe } from "effect";
 type MethodKey = {
   [Key in keyof ExtensionUIContext]-?: ExtensionUIContext[Key] extends (
     ...args: never[]
-  ) => unknown
+  ) => infer _Result
     ? Key
     : never;
 }[keyof ExtensionUIContext];
@@ -18,7 +18,7 @@ type EffectMethod<Method> = Method extends (
 ) => infer Result
   ? (
       ...args: Arguments
-    ) => Result extends PromiseLike<infer Value>
+    ) => [Result] extends [PromiseLike<infer Value>]
       ? Effect.Effect<Value, Cause.UnknownError>
       : Effect.Effect<Result>
   : never;
@@ -48,21 +48,27 @@ export type ProjectTrust = Readonly<{
   notify: EffectMethod<ProjectTrustContext["ui"]["notify"]>;
 }>;
 
-const action = <Key extends MethodKey>(
-  ui: ExtensionUIContext,
-  key: Key,
-  asynchronous: boolean,
-): Interface[Key] => {
-  const invoke = (...args: unknown[]) => {
-    if (asynchronous) {
-      return Effect.tryPromise(() =>
-        Promise.resolve(Reflect.apply(Reflect.get(ui, key), ui, args)),
-      );
-    }
-    return Effect.sync(() => Reflect.apply(Reflect.get(ui, key), ui, args));
-  };
-  return Effect.fn(`Pi.Host.UI.${key}`)(invoke) as Interface[Key];
-};
+const syncAction =
+  <Arguments extends ReadonlyArray<unknown>, Value>(
+    name: string,
+    action: (...args: Arguments) => Value,
+  ): ((...args: Arguments) => Effect.Effect<Value>) =>
+  (...args) =>
+    pipe(
+      Effect.sync(() => action(...args)),
+      Effect.withSpan(name),
+    );
+
+const asyncAction =
+  <Arguments extends ReadonlyArray<unknown>, Value>(
+    name: string,
+    action: (...args: Arguments) => PromiseLike<Value>,
+  ): ((...args: Arguments) => Effect.Effect<Value, Cause.UnknownError>) =>
+  (...args) =>
+    pipe(
+      Effect.tryPromise(() => Promise.resolve(action(...args))),
+      Effect.withSpan(name),
+    );
 
 export const from = (context: ExtensionContext): Interface => {
   const ui = context.ui;
@@ -75,33 +81,82 @@ export const from = (context: ExtensionContext): Interface => {
       Effect.sync(() => ui.theme),
       Effect.withSpan("Pi.Host.UI.theme"),
     ),
-    select: action(ui, "select", true),
-    confirm: action(ui, "confirm", true),
-    input: action(ui, "input", true),
-    notify: action(ui, "notify", false),
-    onTerminalInput: action(ui, "onTerminalInput", false),
-    setStatus: action(ui, "setStatus", false),
-    setWorkingMessage: action(ui, "setWorkingMessage", false),
-    setWorkingVisible: action(ui, "setWorkingVisible", false),
-    setWorkingIndicator: action(ui, "setWorkingIndicator", false),
-    setHiddenThinkingLabel: action(ui, "setHiddenThinkingLabel", false),
-    setWidget: action(ui, "setWidget", false),
-    setFooter: action(ui, "setFooter", false),
-    setHeader: action(ui, "setHeader", false),
-    setTitle: action(ui, "setTitle", false),
-    custom: action(ui, "custom", true),
-    pasteToEditor: action(ui, "pasteToEditor", false),
-    setEditorText: action(ui, "setEditorText", false),
-    getEditorText: action(ui, "getEditorText", false),
-    editor: action(ui, "editor", true),
-    addAutocompleteProvider: action(ui, "addAutocompleteProvider", false),
-    setEditorComponent: action(ui, "setEditorComponent", false),
-    getEditorComponent: action(ui, "getEditorComponent", false),
-    getAllThemes: action(ui, "getAllThemes", false),
-    getTheme: action(ui, "getTheme", false),
-    setTheme: action(ui, "setTheme", false),
-    getToolsExpanded: action(ui, "getToolsExpanded", false),
-    setToolsExpanded: action(ui, "setToolsExpanded", false),
+    select: asyncAction("Pi.Host.UI.select", ui.select.bind(ui)),
+    confirm: asyncAction("Pi.Host.UI.confirm", ui.confirm.bind(ui)),
+    input: asyncAction("Pi.Host.UI.input", ui.input.bind(ui)),
+    notify: syncAction("Pi.Host.UI.notify", ui.notify.bind(ui)),
+    onTerminalInput: syncAction(
+      "Pi.Host.UI.onTerminalInput",
+      ui.onTerminalInput.bind(ui),
+    ),
+    setStatus: syncAction("Pi.Host.UI.setStatus", ui.setStatus.bind(ui)),
+    setWorkingMessage: syncAction(
+      "Pi.Host.UI.setWorkingMessage",
+      ui.setWorkingMessage.bind(ui),
+    ),
+    setWorkingVisible: syncAction(
+      "Pi.Host.UI.setWorkingVisible",
+      ui.setWorkingVisible.bind(ui),
+    ),
+    setWorkingIndicator: syncAction(
+      "Pi.Host.UI.setWorkingIndicator",
+      ui.setWorkingIndicator.bind(ui),
+    ),
+    setHiddenThinkingLabel: syncAction(
+      "Pi.Host.UI.setHiddenThinkingLabel",
+      ui.setHiddenThinkingLabel.bind(ui),
+    ),
+    setWidget: (key, content, options) =>
+      pipe(
+        Effect.sync(() => {
+          if (Array.isArray(content)) ui.setWidget(key, content, options);
+          else ui.setWidget(key, content, options);
+        }),
+        Effect.withSpan("Pi.Host.UI.setWidget"),
+      ),
+    setFooter: syncAction("Pi.Host.UI.setFooter", ui.setFooter.bind(ui)),
+    setHeader: syncAction("Pi.Host.UI.setHeader", ui.setHeader.bind(ui)),
+    setTitle: syncAction("Pi.Host.UI.setTitle", ui.setTitle.bind(ui)),
+    custom: asyncAction("Pi.Host.UI.custom", ui.custom.bind(ui)),
+    pasteToEditor: syncAction(
+      "Pi.Host.UI.pasteToEditor",
+      ui.pasteToEditor.bind(ui),
+    ),
+    setEditorText: syncAction(
+      "Pi.Host.UI.setEditorText",
+      ui.setEditorText.bind(ui),
+    ),
+    getEditorText: syncAction(
+      "Pi.Host.UI.getEditorText",
+      ui.getEditorText.bind(ui),
+    ),
+    editor: asyncAction("Pi.Host.UI.editor", ui.editor.bind(ui)),
+    addAutocompleteProvider: syncAction(
+      "Pi.Host.UI.addAutocompleteProvider",
+      ui.addAutocompleteProvider.bind(ui),
+    ),
+    setEditorComponent: syncAction(
+      "Pi.Host.UI.setEditorComponent",
+      ui.setEditorComponent.bind(ui),
+    ),
+    getEditorComponent: syncAction(
+      "Pi.Host.UI.getEditorComponent",
+      ui.getEditorComponent.bind(ui),
+    ),
+    getAllThemes: syncAction(
+      "Pi.Host.UI.getAllThemes",
+      ui.getAllThemes.bind(ui),
+    ),
+    getTheme: syncAction("Pi.Host.UI.getTheme", ui.getTheme.bind(ui)),
+    setTheme: syncAction("Pi.Host.UI.setTheme", ui.setTheme.bind(ui)),
+    getToolsExpanded: syncAction(
+      "Pi.Host.UI.getToolsExpanded",
+      ui.getToolsExpanded.bind(ui),
+    ),
+    setToolsExpanded: syncAction(
+      "Pi.Host.UI.setToolsExpanded",
+      ui.setToolsExpanded.bind(ui),
+    ),
   };
 };
 

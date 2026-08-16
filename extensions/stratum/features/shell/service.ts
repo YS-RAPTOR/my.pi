@@ -1,238 +1,315 @@
 import {
-  Array as Arr,
+  Clock,
   Context,
+  Data,
+  Duration,
   Effect,
   Layer,
   Option,
-  Order,
+  Path,
+  Semaphore,
   pipe,
-  Predicate,
-  Scope,
 } from "effect";
-import { Herdr } from "./herdr/index.ts";
-import { Stdio } from "./stdio/index.ts";
 import { Store } from "./store.ts";
-import type {
-  Open,
-  OpenFailed,
-  PtyUnavailable,
-  ResourceId,
-  ResourceSummary,
-  SignalFailed,
-  SnapshotFailed,
-  StdinClosed,
-  TerminalSnapshot,
-} from "./types.ts";
-import {
-  CloseStdinUnavailable,
-  Opened,
-  ResourceNotFound,
-  SnapshotUnavailable,
-} from "./types.ts";
+import type { Running } from "./store.ts";
+import { Tmux } from "./tmux.ts";
 
-const textEncoder = new TextEncoder();
-const summariesByStart = Order.make<ResourceSummary>((self, that) => {
-  const started = Order.flip(Order.Number)(self.startedAt, that.startedAt);
-  return started !== 0
-    ? started
-    : Order.String(self.resourceId.value, that.resourceId.value);
-});
+const defaultWaitTimeout = 30;
+
+export class OpenInput extends Data.Class<{
+  readonly cmd: string;
+  readonly cwd?: string;
+  readonly env?: Readonly<Record<string, string | null>>;
+}> {}
+
+export class OpenResult extends Data.Class<{
+  readonly resourceId: string;
+}> {}
+
+export class ReadInput extends Data.Class<{
+  readonly resourceId: string;
+  readonly lines?: number | null;
+  readonly offset?: number;
+}> {}
+
+export class Continuation extends Data.Class<{
+  readonly offset: number;
+  readonly remainingLines: number;
+}> {}
+
+export class ReadResult extends Data.Class<{
+  readonly output: string;
+  readonly continuation?: Continuation;
+}> {}
+
+export class ListInput extends Data.Class<{
+  readonly isRunning?: boolean;
+}> {}
+
+export class OperationFailed extends Data.TaggedError("ShellOperationFailed")<{
+  readonly operation: string;
+  readonly message: string;
+}> {}
+
+export type ShellError =
+  | OperationFailed
+  | Store.ResourceNotFound
+  | Store.OperationFailed
+  | Tmux.OperationFailed;
 
 export type Interface = Readonly<{
-  open: (
-    request: Open,
-  ) => Effect.Effect<Opened, OpenFailed | PtyUnavailable>;
-  snapshot: (
-    resourceId: ResourceId,
-    lines: number | null,
-  ) => Effect.Effect<
-    TerminalSnapshot,
-    ResourceNotFound | SnapshotUnavailable | SnapshotFailed
-  >;
-  wait: (
-    resourceId: ResourceId,
-    yieldAfter: number,
-  ) => Effect.Effect<boolean, ResourceNotFound>;
+  open: (input: OpenInput) => Effect.Effect<OpenResult, ShellError>;
+  read: (input: ReadInput) => Effect.Effect<ReadResult, ShellError>;
+  write: (resourceId: string, text: string) => Effect.Effect<void, ShellError>;
+  sendKeys: (
+    resourceId: string,
+    keys: ReadonlyArray<string>,
+  ) => Effect.Effect<void, ShellError>;
+  inspect: (resourceId: string) => Effect.Effect<Store.Inspection, ShellError>;
   list: (
-    active?: boolean,
-  ) => Effect.Effect<ReadonlyArray<ResourceSummary>>;
-  inspect: (
-    resourceId: ResourceId,
-  ) => Effect.Effect<ResourceSummary, ResourceNotFound>;
-  write: (
-    resourceId: ResourceId,
-    text: string,
-  ) => Effect.Effect<void, ResourceNotFound | StdinClosed>;
-  closeStdin: (
-    resourceId: ResourceId,
-  ) => Effect.Effect<void, ResourceNotFound | CloseStdinUnavailable>;
-  signal: (
-    resourceId: ResourceId,
-    signal: string,
-  ) => Effect.Effect<void, ResourceNotFound | SignalFailed>;
+    input?: ListInput,
+  ) => Effect.Effect<ReadonlyArray<Store.Inspection>, ShellError>;
+  wait: (
+    resourceId: string,
+    timeout?: number,
+  ) => Effect.Effect<Store.Inspection, ShellError>;
+  kill: (resourceId: string) => Effect.Effect<void, ShellError>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()(
   "stratum/Features.Shell",
 ) {}
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const herdr = yield* Herdr.Service;
-    const stdio = yield* Stdio.Service;
-    const scope = yield* Scope.Scope;
+    const paths = yield* Path.Path;
     const store = yield* Store.Service;
+    const tmux = yield* Tmux.Service;
+    const mutex = yield* Semaphore.make(1);
 
-    const entry = Effect.fn("Shell.__entry")(function* (
-      resourceId: ResourceId,
+    const finalize = Effect.fn("Shell.__finalize")(function* (
+      resource: Running,
     ) {
-      const found = yield* store.get(resourceId);
-      if (Option.isNone(found)) {
-        return yield* new ResourceNotFound({ resourceId });
-      }
-      return found.value;
+      const current = yield* store.get(resource.metadata.resourceId);
+      if (Store.Resource.$is("completed")(current)) return current;
+
+      const status = yield* tmux.status(resource.target);
+      if (!status.dead) return;
+      const [visible, history] = yield* Effect.all(
+        [
+          tmux.capture(resource.target, false),
+          tmux.capture(resource.target, true),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const completed = yield* store.complete(
+        resource,
+        new Store.Inspection({
+          ...resource.metadata,
+          isRunning: false,
+          exitCode: status.exitCode,
+          signal: status.signal,
+        }),
+        visible,
+        history,
+      );
+      yield* tmux.remove(resource.target);
+      return completed;
     });
 
-    const open: Interface["open"] = Effect.fn("Shell.open")(
-      function* (request) {
-        if (request.pty === true) {
-          return yield* Effect.uninterruptible(
-            Effect.gen(function* () {
-              const resource = yield* herdr.open(request);
-              const registered = yield* store.register(
-                Store.NewEntry.terminal({ resource }),
-              );
-              yield* pipe(
-                resource.supervise(registered.id),
-                Effect.forkIn(scope, { startImmediately: true }),
-              );
-              return new Opened({ resourceId: registered.id });
-            }),
-          );
-        }
+    const refresh = Effect.fn("Shell.__refresh")(function* (
+      resourceId: string,
+    ) {
+      const resource = yield* store.get(resourceId);
+      if (Store.Resource.$is("completed")(resource)) return resource;
+      return (yield* finalize(resource)) ?? resource;
+    });
 
-        return yield* Effect.uninterruptibleMask((restore) =>
+    const open: Interface["open"] = Effect.fn("Shell.open")(function* (input) {
+      return yield* Effect.uninterruptible(
+        mutex.withPermit(
           Effect.gen(function* () {
-            const resource = yield* restore(stdio.open(request));
-            const registered = yield* store.register(
-              Store.NewEntry.stdio({ resource }),
+            const resourceId = globalThis.crypto.randomUUID();
+            const cwd = paths.resolve(input.cwd ?? process.cwd());
+            const target = yield* tmux.open(
+              resourceId,
+              cwd,
+              input.cmd,
+              input.env,
             );
-            return new Opened({
-              resourceId: registered.id,
-              outputFile: resource.outputFile,
+            const resource = yield* store.register(
+              new Store.Metadata({
+                resourceId,
+                command: input.cmd,
+                cwd,
+                startedAt: yield* Clock.currentTimeMillis,
+              }),
+              target,
+            );
+            return new OpenResult({ resourceId: resource.metadata.resourceId });
+          }),
+        ),
+      );
+    });
+
+    const read: Interface["read"] = Effect.fn("Shell.read")(function* (input) {
+      return yield* mutex.withPermit(
+        Effect.gen(function* () {
+          const resource = yield* refresh(input.resourceId);
+          const lines = input.lines ?? null;
+          const offset = input.offset ?? 0;
+          if (lines === null) {
+            const output = Store.Resource.$is("running")(resource)
+              ? yield* tmux.capture(resource.target, false)
+              : (yield* store.artifact(resource)).visible;
+            return new ReadResult({ output });
+          }
+
+          const history = Store.Resource.$is("running")(resource)
+            ? yield* tmux.capture(resource.target, true)
+            : (yield* store.artifact(resource)).history;
+          const available = history === "" ? [] : history.split("\n");
+          const end = Math.max(0, available.length - offset);
+          const start = Math.max(0, end - lines);
+          const output = available.slice(start, end).join("\n");
+          if (start === 0) return new ReadResult({ output });
+          return new ReadResult({
+            output,
+            continuation: new Continuation({
+              offset: offset + (end - start),
+              remainingLines: start,
+            }),
+          });
+        }),
+      );
+    });
+
+    const running = Effect.fn("Shell.__running")(function* (
+      resourceId: string,
+    ) {
+      const resource = yield* refresh(resourceId);
+      if (Store.Resource.$is("running")(resource)) return resource;
+      return yield* new OperationFailed({
+        operation: "access running shell resource",
+        message: `Shell resource ${resourceId} is no longer running`,
+      });
+    });
+
+    const write: Interface["write"] = Effect.fn("Shell.write")(
+      function* (resourceId, text) {
+        yield* mutex.withPermit(
+          Effect.gen(function* () {
+            const resource = yield* running(resourceId);
+            yield* tmux.write(resource.target, text);
+          }),
+        );
+      },
+    );
+
+    const sendKeys: Interface["sendKeys"] = Effect.fn("Shell.sendKeys")(
+      function* (resourceId, keys) {
+        yield* mutex.withPermit(
+          Effect.gen(function* () {
+            const resource = yield* running(resourceId);
+            yield* tmux.sendKeys(resource.target, keys);
+          }),
+        );
+      },
+    );
+
+    const inspect: Interface["inspect"] = Effect.fn("Shell.inspect")(
+      function* (resourceId) {
+        return yield* mutex.withPermit(
+          Effect.gen(function* () {
+            const resource = yield* refresh(resourceId);
+            if (Store.Resource.$is("completed")(resource)) {
+              return (yield* store.artifact(resource)).inspection;
+            }
+            return new Store.Inspection({
+              ...resource.metadata,
+              isRunning: true,
             });
           }),
         );
       },
     );
 
-    const snapshot: Interface["snapshot"] = Effect.fn(
-      "Shell.snapshot",
-    )(function* (resourceId, lines) {
-      const found = yield* entry(resourceId);
-      if (Predicate.isTagged(found, "stdio")) {
-        return yield* new SnapshotUnavailable({ resourceId });
-      }
-      return yield* found.resource.snapshot(found.id, lines);
+    const list: Interface["list"] = Effect.fn("Shell.list")(function* (input) {
+      const resources = yield* store.entries;
+      const inspected = yield* Effect.forEach(resources, (resource) =>
+        inspect(resource.metadata.resourceId),
+      );
+      return inspected
+        .filter(
+          (resource) =>
+            input?.isRunning === undefined ||
+            resource.isRunning === input.isRunning,
+        )
+        .sort((left, right) =>
+          right.startedAt === left.startedAt
+            ? right.resourceId.localeCompare(left.resourceId)
+            : right.startedAt - left.startedAt,
+        );
     });
 
-    const wait: Interface["wait"] = Effect.fn("Shell.wait")(
-      function* (resourceId, yieldAfter) {
-        const found = yield* entry(resourceId);
-        return Predicate.isTagged(found, "stdio")
-          ? yield* found.resource.wait(yieldAfter)
-          : yield* found.resource.wait(found.id, yieldAfter);
-      },
-    );
+    const wait: Interface["wait"] = Effect.fn("Shell.wait")(function* (
+      resourceId,
+      timeout = defaultWaitTimeout,
+    ) {
+      const resource = yield* mutex.withPermit(refresh(resourceId));
+      if (Store.Resource.$is("completed")(resource)) {
+        return (yield* store.artifact(resource)).inspection;
+      }
+      return yield* Effect.raceFirst(
+        pipe(tmux.wait(resource.target), Effect.andThen(inspect(resourceId))),
+        pipe(
+          Effect.sleep(Duration.seconds(timeout)),
+          Effect.andThen(inspect(resourceId)),
+        ),
+      );
+    });
 
-    const discover = Effect.fn("Shell.__discover")(function* () {
-      for (const candidate of yield* herdr.discover) {
-        yield* store.register(
-          Store.NewEntry.terminal({
-            resource: candidate.resource,
-            identity: candidate.identity,
+    const kill: Interface["kill"] = Effect.fn("Shell.kill")(
+      function* (resourceId) {
+        const target = yield* mutex.withPermit(
+          Effect.gen(function* () {
+            const resource = yield* refresh(resourceId);
+            if (Store.Resource.$is("completed")(resource)) {
+              return Option.none<Running>();
+            }
+            yield* tmux.kill(resource.target);
+            return Option.some(resource);
           }),
         );
-      }
-    });
-
-    const summary = Effect.fn("Shell.__summary")(
-      (found: Store.Entry) => found.resource.inspect(found.id),
+        if (Option.isNone(target)) return;
+        yield* tmux.wait(target.value.target);
+        yield* mutex.withPermit(refresh(resourceId));
+      },
     );
 
-    const list: Interface["list"] = Effect.fn("Shell.list")(
-      function* (active) {
-        yield* discover();
-        const summaries = yield* Effect.forEach(
-          yield* store.entries,
-          summary,
-          { concurrency: "unbounded" },
+    yield* Effect.addFinalizer(
+      Effect.fn("Shell.shutdown")(function* () {
+        const resources = yield* store.entries;
+        yield* Effect.forEach(
+          resources,
+          (resource) =>
+            Store.Resource.$is("running")(resource)
+              ? pipe(kill(resource.metadata.resourceId), Effect.ignore)
+              : Effect.void,
+          { discard: true, concurrency: "unbounded" },
         );
-        return pipe(
-          summaries,
-          Arr.getSomes,
-          Arr.filter(
-            (resource) =>
-              active === undefined ||
-              active ===
-                (Predicate.isTagged(resource.lifecycle, "running") ||
-                  Predicate.isTagged(resource.lifecycle, "draining")),
-          ),
-          Arr.sort(summariesByStart),
-        );
-      },
-    );
-
-    const inspect: Interface["inspect"] = Effect.fn(
-      "Shell.inspect",
-    )(function* (resourceId) {
-      const value = yield* summary(yield* entry(resourceId));
-      if (Option.isNone(value)) {
-        return yield* new ResourceNotFound({ resourceId });
-      }
-      return value.value;
-    });
-
-    const write: Interface["write"] = Effect.fn("Shell.write")(
-      function* (resourceId, text) {
-        const found = yield* entry(resourceId);
-        if (Predicate.isTagged(found, "stdio")) {
-          return yield* found.resource.write(
-            resourceId,
-            textEncoder.encode(text),
-          );
-        }
-        return yield* found.resource.write(found.id, text);
-      },
-    );
-
-    const closeStdin: Interface["closeStdin"] = Effect.fn(
-      "Shell.closeStdin",
-    )(function* (resourceId) {
-      const found = yield* entry(resourceId);
-      if (Predicate.isTagged(found, "stdio")) {
-        return yield* found.resource.closeStdin;
-      }
-      return yield* new CloseStdinUnavailable({ resourceId });
-    });
-
-    const signal: Interface["signal"] = Effect.fn("Shell.signal")(
-      function* (resourceId, signal) {
-        const found = yield* entry(resourceId);
-        return yield* found.resource.signal(resourceId, signal);
-      },
+      }),
     );
 
     return Service.of({
       open,
-      snapshot,
-      wait,
-      list,
-      inspect,
+      read,
       write,
-      closeStdin,
-      signal,
+      sendKeys,
+      inspect,
+      list,
+      wait,
+      kill,
     });
   }),
 );

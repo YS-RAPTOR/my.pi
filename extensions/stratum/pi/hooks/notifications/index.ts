@@ -148,9 +148,11 @@ export const layer = Layer.effect(
             Effect.map(Stream.fromPubSub),
           ),
       );
-      return Stream.mergeAll(streams, {
+      const merged = Stream.mergeAll(streams, {
         concurrency: "unbounded",
-      }) as Stream.Stream<NotificationOf<Types[number]>>;
+      });
+      // SAFETY: every merged topic is selected from Types and publishes NotificationOf<Types[number]>.
+      return merged as Stream.Stream<NotificationOf<Types[number]>>;
     });
 
     const listen: Interface["listen"] = Effect.fn(
@@ -159,14 +161,11 @@ export const layer = Layer.effect(
       const Types extends readonly [NotificationType, ...NotificationType[]],
       Error,
     >(types: Types, listener: Listener<Types[number], Error>) {
-      const erased: AnyListener = (notification) =>
-        listener(
-          notification as NotificationOf<Types[number]>,
-        ) as Effect.Effect<
-          void,
-          Error,
-          Host.Service | Host.Callback | Host.CallbackContext
-        >;
+      const erased: AnyListener = (notification) => {
+        // SAFETY: this listener is inserted only into buckets named by Types.
+        const narrowed = notification as NotificationOf<Types[number]>;
+        return listener(narrowed);
+      };
       for (const type of HashSet.fromIterable(types)) {
         const bucket = yield* getOrCreate(
           listeners,

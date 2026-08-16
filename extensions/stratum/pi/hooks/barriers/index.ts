@@ -69,6 +69,7 @@ export const layer = Layer.effect(
       function* <Type extends BarrierType>(type: Type, handler: Handler<Type>) {
         const erased: AnyHandler = Effect.fn("Pi.Hooks.Barriers.__handle")(
           function* (barrier) {
+            // SAFETY: this erased handler is stored only under its matching barrier type.
             yield* handler(barrier as BarrierOf<Type>);
           },
         );
