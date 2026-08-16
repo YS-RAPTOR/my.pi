@@ -4,6 +4,7 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
+import type { Config } from "#s/config";
 import {
   cache,
   context,
@@ -167,6 +168,7 @@ export class FooterComponent implements Component {
   private readonly theme: Theme;
   private readonly footerData: ReadonlyFooterDataProvider;
   private readonly runway: Runway;
+  private readonly config: Config.Value["footer"];
   private readonly unsubscribeBranch: () => void;
 
   constructor(
@@ -174,12 +176,14 @@ export class FooterComponent implements Component {
     theme: Theme,
     footerData: ReadonlyFooterDataProvider,
     runway: Runway,
+    config: Config.Value["footer"],
     requestRender: () => void,
   ) {
     this.context = context;
     this.theme = theme;
     this.footerData = footerData;
     this.runway = runway;
+    this.config = config;
     this.unsubscribeBranch = footerData.onBranchChange(requestRender);
   }
 
@@ -202,62 +206,95 @@ export class FooterComponent implements Component {
       },
       this.theme,
     );
-    const modelVariant = model(
-      {
-        id: view.model?.id,
-        reasoning: view.model?.reasoning ?? false,
-        thinkingLevel: view.thinkingLevel,
-      },
-      this.theme,
-    )[0]!;
+    const topItems = [
+      ...(this.config.cwd ? [item("cwd", "left", cwdVariants)] : []),
+      ...(this.config.model
+        ? [
+            item(
+              "model",
+              "right",
+              model(
+                {
+                  id: view.model?.id,
+                  reasoning: view.model?.reasoning ?? false,
+                  thinkingLevel: view.thinkingLevel,
+                },
+                this.theme,
+              ),
+            ),
+          ]
+        : []),
+    ];
     const bottomItems = [
-      item(
-        "tokens",
-        "left",
-        tokens({ input: usage.input, output: usage.output }, this.theme),
-      ),
-      item(
-        "cache",
-        "left",
-        cache(
-          {
-            read: usage.cacheRead,
-            write: usage.cacheWrite,
-            hitRate: usage.latestCacheHitRate,
-          },
-          this.theme,
-        ),
-      ),
-      item(
-        "cost",
-        "left",
-        cost(
-          {
-            total: usage.cost,
-            subscription: subscriptionBacked(view),
-          },
-          this.theme,
-        ),
-      ),
-      item(
-        "context",
-        "left",
-        context(
-          {
-            percent: contextUsage?.percent ?? null,
-            contextWindow:
-              contextUsage?.contextWindow ?? view.model?.contextWindow ?? 0,
-          },
-          this.theme,
-        ),
-      ),
-      item("runway", "right", this.runway.variants(this.theme)),
+      ...(this.config.tokens
+        ? [
+            item(
+              "tokens",
+              "left",
+              tokens(
+                { input: usage.input, output: usage.output },
+                this.theme,
+              ),
+            ),
+          ]
+        : []),
+      ...(this.config.cache
+        ? [
+            item(
+              "cache",
+              "left",
+              cache(
+                {
+                  read: usage.cacheRead,
+                  write: usage.cacheWrite,
+                  hitRate: usage.latestCacheHitRate,
+                },
+                this.theme,
+              ),
+            ),
+          ]
+        : []),
+      ...(this.config.cost
+        ? [
+            item(
+              "cost",
+              "left",
+              cost(
+                {
+                  total: usage.cost,
+                  subscription: subscriptionBacked(view),
+                },
+                this.theme,
+              ),
+            ),
+          ]
+        : []),
+      ...(this.config.context.enabled
+        ? [
+            item(
+              "context",
+              "left",
+              context(
+                {
+                  percent: contextUsage?.percent ?? null,
+                  contextWindow:
+                    contextUsage?.contextWindow ??
+                    view.model?.contextWindow ??
+                    0,
+                  warningPercent: this.config.context["warning-percent"],
+                  errorPercent: this.config.context["error-percent"],
+                },
+                this.theme,
+              ),
+            ),
+          ]
+        : []),
+      ...(this.config.runway.enabled
+        ? [item("runway", "right", this.runway.variants(this.theme))]
+        : []),
     ];
     const top = renderRow(
-      [
-        item("cwd", "left", cwdVariants),
-        item("model", "right", [modelVariant]),
-      ],
+      topItems,
       width,
       [{ key: "cwd", through: "last-folder" }],
       ["model", "cwd"],
@@ -274,13 +311,15 @@ export class FooterComponent implements Component {
       ],
       ["runway"],
     );
-    const statusLine = statuses(
-      this.footerData.getExtensionStatuses(),
-      width,
-      this.theme,
-    );
+    const statusLine = this.config.statuses
+      ? statuses(
+          this.footerData.getExtensionStatuses(),
+          width,
+          this.theme,
+        )
+      : undefined;
     return [
-      top,
+      ...(top ? [top] : []),
       ...(bottom ? [bottom] : []),
       ...(statusLine ? [statusLine] : []),
     ];

@@ -5,20 +5,18 @@ import { Gating } from "#s/features/better-skills/gating";
 import { Inline } from "#s/features/better-skills/inline";
 import { Runtime } from "#s/features/better-skills/runtime";
 
-const configuredLayer = (config: Config.Value["better-skills"]) => {
-  const features = Layer.mergeAll(
-    config.expansion ? Expansion.layer : Layer.empty,
-    config.gating ? Gating.layer(config.inline) : Layer.empty,
-    config.inline ? Inline.layer : Layer.empty,
-  ).pipe(Layer.provide(Runtime.layer));
-
-  return Layer.mergeAll(Runtime.layer, features);
-};
-
 export const layer = pipe(
-  Effect.map(Config.Service, ({ "better-skills": config }) =>
-    config.enabled ? configuredLayer(config) : Layer.empty,
-  ),
+  Effect.map(Config.Service, ({ "better-skills": config }) => {
+    if (!config.enabled) return Layer.empty;
+
+    const features = Layer.mergeAll(
+      config.expansion ? Expansion.layer : Layer.empty,
+      config.gating ? Gating.layer : Layer.empty,
+      config.inline ? Inline.layer : Layer.empty,
+    ).pipe(Layer.provide(Runtime.layer));
+
+    return Layer.mergeAll(Runtime.layer, features);
+  }),
   Layer.unwrap,
 );
 

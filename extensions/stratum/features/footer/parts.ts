@@ -87,7 +87,12 @@ export const cost = (
   );
 
 export const context = (
-  data: Readonly<{ percent: number | null; contextWindow: number }>,
+  data: Readonly<{
+    percent: number | null;
+    contextWindow: number;
+    warningPercent: number;
+    errorPercent: number;
+  }>,
   theme: Theme,
 ): ReadonlyArray<FooterVariant> => {
   const text =
@@ -95,9 +100,9 @@ export const context = (
       ? `?/${formatTokens(data.contextWindow)}`
       : `${data.percent.toFixed(1)}%/${formatTokens(data.contextWindow)}`;
   const rendered =
-    data.percent !== null && data.percent > 90
+    data.percent !== null && data.percent > data.errorPercent
       ? theme.fg("error", text)
-      : data.percent !== null && data.percent > 70
+      : data.percent !== null && data.percent > data.warningPercent
         ? theme.fg("warning", text)
         : theme.fg("dim", text);
   const width = visibleWidth(text);

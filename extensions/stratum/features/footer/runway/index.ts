@@ -14,6 +14,7 @@ import {
   SynchronizedRef,
   pipe,
 } from "effect";
+import { Config } from "#s/config";
 import type { FooterVariant } from "../parts.ts";
 import {
   renderLoading,
@@ -27,9 +28,6 @@ import {
   type Context as RunwayContext,
   type UsageReport,
 } from "./usage.ts";
-
-const queryInterval = Duration.seconds(30);
-const maximumCachedFailures = 5;
 
 type Problem = "error" | "unavailable";
 type Display = Data.TaggedEnum<{
@@ -56,8 +54,17 @@ export type Interface = Readonly<{
 }>;
 
 export class Service extends Context.Service<Service, Interface>()(
-  "stratum/Footer.Runway",
+  "stratum/Features.Footer.Runway",
 ) {}
+
+export const disabledLayer = Layer.succeed(
+  Service,
+  Service.of({
+    enable: () => Effect.void,
+    variants: () => [],
+    disable: Effect.void,
+  }),
+);
 
 const fixedVariant = (id: string, text: string): FooterVariant => {
   const width = visibleWidth(text);
@@ -72,6 +79,7 @@ const fixedVariant = (id: string, text: string): FooterVariant => {
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const config = (yield* Config.Service).footer.runway;
     const queries = yield* FiberMap.make<"query">();
     const state = yield* SynchronizedRef.make<State>({
       context: Option.none(),
@@ -106,7 +114,10 @@ export const layer = Layer.effect(
                 ? { ...latest, display: Display.loading() }
                 : latest,
             );
-            return yield* queryUsage(context);
+            return yield* queryUsage(
+              context,
+              config["request-timeout-ms"],
+            );
           }),
           Effect.matchEffect({
             onFailure: (error) =>
@@ -116,12 +127,12 @@ export const layer = Layer.effect(
                   "report",
                 )
                   ? latest.display.failedRefreshes + 1
-                  : maximumCachedFailures;
+                  : config["cached-failure-limit"];
                 return {
                   ...latest,
                   display:
                     Predicate.isTagged(latest.display, "report") &&
-                    failedRefreshes < maximumCachedFailures
+                    failedRefreshes < config["cached-failure-limit"]
                       ? Display.report({
                           report: latest.display.report,
                           failedRefreshes,
@@ -204,7 +215,9 @@ export const layer = Layer.effect(
 
     yield* pipe(
       refresh(),
-      Effect.schedule(Schedule.spaced(queryInterval)),
+      Effect.schedule(
+        Schedule.spaced(Duration.millis(config["refresh-interval-ms"])),
+      ),
       Effect.ignore,
       Effect.forkScoped,
     );

@@ -6,6 +6,7 @@ import {
   Config as EffectConfig,
   Context,
   Data,
+  Duration,
   Effect,
   FileSystem,
   HashMap,
@@ -18,6 +19,7 @@ import {
   pipe,
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { Config } from "#s/config";
 import { Shell } from "#s/features/better-skills/shell";
 
 export type SkillState = "model-accessible" | "user-only" | "unavailable";
@@ -90,6 +92,8 @@ export class Service extends Context.Service<Service, Interface>()(
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const config = yield* Config.Service;
+    const commandTimeoutMs = config["better-skills"]["command-timeout-ms"];
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -131,7 +135,7 @@ export const layer = Layer.effect(
     )(function* (command: string, cwd: string) {
       const execution = yield* pipe(
         Shell.run(processes, command, cwd),
-        Effect.timeout("10 seconds"),
+        Effect.timeout(Duration.millis(commandTimeoutMs)),
         Effect.result,
       );
       if (Result.isFailure(execution)) {

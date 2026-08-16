@@ -3,6 +3,7 @@ import {
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Effect, HashMap, Layer, Option, Schema, pipe } from "effect";
+import { Config } from "#s/config";
 import { Runtime } from "#s/features/better-skills/runtime";
 import { Pi } from "#s/pi";
 import { Catalog } from "./catalog.ts";
@@ -130,9 +131,11 @@ const promptSkills = (
 ) =>
   skills.map(catalogSkill);
 
-export const layer = (inlineEnabled: boolean) => pipe(
+export const layer = pipe(
   Layer.effectDiscard(
     Effect.gen(function* () {
+      const config = yield* Config.Service;
+      const inlineEnabled = config["better-skills"].inline;
       const catalog = yield* Catalog.Service;
       const barriers = yield* Pi.Hooks.Barriers.Service;
       const contributions = yield* Pi.Contributions.Service;

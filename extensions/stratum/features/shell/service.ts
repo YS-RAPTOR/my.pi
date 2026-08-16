@@ -10,11 +10,10 @@ import {
   Semaphore,
   pipe,
 } from "effect";
+import { Config } from "#s/config";
 import { Store } from "./store.ts";
 import type { Running } from "./store.ts";
 import { Tmux } from "./tmux.ts";
-
-const defaultWaitTimeout = 30;
 
 export class OpenInput extends Data.Class<{
   readonly cmd: string;
@@ -82,6 +81,7 @@ export class Service extends Context.Service<Service, Interface>()(
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const { shell: config } = yield* Config.Service;
     const paths = yield* Path.Path;
     const store = yield* Store.Service;
     const tmux = yield* Tmux.Service;
@@ -156,7 +156,10 @@ export const layer = Layer.effect(
       return yield* mutex.withPermit(
         Effect.gen(function* () {
           const resource = yield* refresh(input.resourceId);
-          const lines = input.lines ?? null;
+          const lines =
+            input.lines === undefined || input.lines === null
+              ? null
+              : Math.min(input.lines, config["max-read-lines"]);
           const offset = input.offset ?? 0;
           if (lines === null) {
             const output = Store.Resource.$is("running")(resource)
@@ -254,7 +257,7 @@ export const layer = Layer.effect(
 
     const wait: Interface["wait"] = Effect.fn("Shell.wait")(function* (
       resourceId,
-      timeout = defaultWaitTimeout,
+      timeout = config["default-wait-timeout-seconds"],
     ) {
       const resource = yield* mutex.withPermit(refresh(resourceId));
       if (Store.Resource.$is("completed")(resource)) {

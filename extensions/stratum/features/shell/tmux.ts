@@ -12,10 +12,7 @@ import {
   pipe,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-
-const terminalWidth = 175;
-const terminalHeight = 75;
-const historyLimit = 100_000;
+import { Config } from "#s/config";
 
 export class Target extends Data.Class<{
   readonly sessionId: string;
@@ -88,6 +85,7 @@ const signalName = (value: string): string | null => {
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
+    const config = (yield* Config.Service).shell.terminal;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const initialization = yield* Semaphore.make(1);
     const backend = yield* Ref.make<Option.Option<Backend>>(Option.none());
@@ -171,7 +169,7 @@ export const layer = Layer.effect(
             "set-option",
             "-g",
             "history-limit",
-            String(historyLimit),
+            String(config["history-lines"]),
             ";",
             "set-option",
             "-gw",
@@ -209,9 +207,9 @@ export const layer = Layer.effect(
           "-c",
           cwd,
           "-x",
-          String(terminalWidth),
+          String(config.columns),
           "-y",
-          String(terminalHeight),
+          String(config.rows),
         ];
         const removed: Array<string> = [];
         for (const [name, value] of Object.entries(env ?? {})) {

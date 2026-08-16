@@ -4,8 +4,8 @@ import { Effect, Layer, ManagedRuntime, pipe } from "effect";
 import { Config } from "#s/config";
 import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
+import { Footer } from "#s/features/footer";
 import { Shell } from "#s/features/shell";
-import { Footer } from "#s/footer";
 import { Pi } from "#s/pi";
 
 const platform = NodeServices.layer;
@@ -42,7 +42,7 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 
 export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
+export { Footer } from "#s/features/footer";
 export { Shell } from "#s/features/shell";
-export { Footer } from "#s/footer";
 export { Pi } from "#s/pi";
 export default Stratum;

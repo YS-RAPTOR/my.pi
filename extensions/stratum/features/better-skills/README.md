@@ -14,12 +14,13 @@ Configure the feature in `~/.pi/agent/stratum.json`:
     "enabled": true,
     "inline": true,
     "gating": true,
-    "expansion": true
+    "expansion": true,
+    "command-timeout-ms": 10000
   }
 }
 ```
 
-The main switch disables the complete feature. Each subfeature can otherwise be toggled independently.
+The main switch disables the complete feature. Each subfeature can otherwise be toggled independently. `command-timeout-ms` limits both gating condition commands and skill-content interpolation commands. Every setting has a default.
 
 Input interception is ordered as follows:
 

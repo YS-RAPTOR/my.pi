@@ -32,6 +32,6 @@ The primary window controls the foreground. The weekly window independently tint
 
 ## Runtime behavior
 
-The extension is active only for the `openai-codex` provider. It reads subscription quota from Pi's existing Codex authentication and refreshes every 30 seconds. A cached report remains visible through four transient failures; the fifth displays `error`. Missing subscription auth or quota displays `n/a`.
+The feature is active only for the `openai-codex` provider. It reads subscription quota from Pi's existing Codex authentication. By default it refreshes every 30 seconds with a 15-second request timeout. A cached report remains visible through four transient failures; the fifth displays `error`. These values are configurable through the footer's `runway` settings. Missing subscription auth or quota displays `n/a`.
 
 This implementation is informed by [`@llblab/pi-codex-usage`](https://github.com/llblab/pi-codex-usage), which is MIT-licensed. Codex Runway is intentionally narrower and does not include its app-server fallback, Spark bucket, Telegram integration, provisional-full-report delay, or package-specific status label.

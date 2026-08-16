@@ -1,6 +1,7 @@
 import {
   Cause,
   Config as EffectConfig,
+  Duration,
   Effect,
   FileSystem,
   Layer,
@@ -10,6 +11,7 @@ import {
   pipe,
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { Config } from "#s/config";
 import { Runtime } from "#s/features/better-skills/runtime";
 import { Shell } from "#s/features/better-skills/shell";
 import { Pi } from "#s/pi";
@@ -36,6 +38,8 @@ const skipLines = (text: string, lines: number) => {
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
+    const config = yield* Config.Service;
+    const commandTimeoutMs = config["better-skills"]["command-timeout-ms"];
     const files = yield* FileSystem.FileSystem;
     const interceptors = yield* Pi.Hooks.Interceptors.Service;
     const paths = yield* Path.Path;
@@ -58,7 +62,7 @@ export const layer = Layer.effectDiscard(
         (state, match) =>
           pipe(
             Shell.run(processes, match[1] ?? "", cwd),
-            Effect.timeout("10 seconds"),
+            Effect.timeout(Duration.millis(commandTimeoutMs)),
             Effect.flatMap(([output, exitCode]) => {
               if (exitCode !== 0) {
                 const detail = output === "" ? "(no output)" : output;

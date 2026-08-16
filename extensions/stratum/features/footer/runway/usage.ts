@@ -3,7 +3,6 @@ import { Data, Effect, Predicate, Schema, pipe } from "effect";
 
 const codexProvider = "openai-codex";
 const usageUrl = "https://chatgpt.com/backend-api/wham/usage";
-const requestTimeoutMillis = 15_000;
 
 const Numeric = Schema.Union([Schema.Finite, Schema.FiniteFromString]);
 const UsageWindowPayload = Schema.Struct({
@@ -68,7 +67,7 @@ const failureMessage = (cause: unknown, fallback: string) =>
   Predicate.isError(cause) && cause.message ? cause.message : fallback;
 
 export const queryUsage = Effect.fn("Footer.Runway.queryUsage")(
-  function* (context: Context) {
+  function* (context: Context, requestTimeoutMillis: number) {
     if (!isCodexContext(context)) {
       return yield* new UsageUnavailable({
         message: "Codex subscription auth was unavailable.",
