@@ -29,8 +29,8 @@ export type HandlerResult<Type extends InterceptorType> =
 
 type HandlerRequirements<Type extends InterceptorType> =
   Type extends "project_trust"
-    ? Host.ProjectTrust
-    : Host.Service | Host.Callback;
+    ? Host.ProjectTrust | Host.ProjectTrustContext
+    : Host.Service | Host.Callback | Host.CallbackContext;
 
 export type Handler<Type extends InterceptorType> = (
   event: InterceptorOf<Type>,

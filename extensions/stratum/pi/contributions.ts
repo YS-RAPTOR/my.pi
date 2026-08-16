@@ -41,7 +41,7 @@ export type ToolDefinition<
         ReturnType<PiToolDefinition<Parameters, Details, State>["execute"]>
       >,
       Error,
-      Host.Service | Host.Callback
+      Host.Service | Host.Callback | Host.CallbackContext
     >;
   }>;
 
@@ -56,7 +56,11 @@ export type CommandDefinition<
     ) => Effect.Effect<
       void,
       Error,
-      Host.Service | Host.Callback | Host.Command
+      | Host.Service
+      | Host.Callback
+      | Host.CallbackContext
+      | Host.Command
+      | Host.CommandContext
     >;
     getArgumentCompletions?: (
       argumentPrefix: string,

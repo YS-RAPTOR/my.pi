@@ -67,7 +67,7 @@ const normalizeWindow = (
 const failureMessage = (cause: unknown, fallback: string) =>
   Predicate.isError(cause) && cause.message ? cause.message : fallback;
 
-export const queryUsage = Effect.fn("Frame.Footer.Runway.queryUsage")(
+export const queryUsage = Effect.fn("Footer.Runway.queryUsage")(
   function* (context: Context) {
     if (!isCodexContext(context)) {
       return yield* new UsageUnavailable({

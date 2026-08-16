@@ -2,7 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-  ProjectTrustContext,
+  ProjectTrustContext as PiProjectTrustContext,
 } from "@earendil-works/pi-coding-agent";
 import { Context as EffectContext, Effect, Layer, pipe } from "effect";
 import * as AgentState from "./agent-state.ts";
@@ -39,15 +39,30 @@ export class Callback extends EffectContext.Service<
   CallbackInterface
 >()("stratum/Pi.Host.Callback") {}
 
+export class CallbackContext extends EffectContext.Service<
+  CallbackContext,
+  ExtensionContext
+>()("stratum/Pi.Host.CallbackContext") {}
+
 export class Command extends EffectContext.Service<
   Command,
   CommandInterface
 >()("stratum/Pi.Host.Command") {}
 
+export class CommandContext extends EffectContext.Service<
+  CommandContext,
+  ExtensionCommandContext
+>()("stratum/Pi.Host.CommandContext") {}
+
 export class ProjectTrust extends EffectContext.Service<
   ProjectTrust,
   ProjectTrustInterface
 >()("stratum/Pi.Host.ProjectTrust") {}
+
+export class ProjectTrustContext extends EffectContext.Service<
+  ProjectTrustContext,
+  PiProjectTrustContext
+>()("stratum/Pi.Host.ProjectTrustContext") {}
 
 export const layer = (pi: ExtensionAPI) =>
   Layer.succeed(
@@ -61,16 +76,19 @@ export const layer = (pi: ExtensionAPI) =>
 export const provideCallback = Effect.fn("Pi.Host.provideCallback")(
   function* <Value, Error, Requirements>(
     effect: Effect.Effect<Value, Error, Requirements>,
-    context: ExtensionContext,
+    callbackContext: ExtensionContext,
   ) {
-    return yield* Effect.provideService(
+    return yield* pipe(
       effect,
-      Callback,
-      Callback.of({
-        agent: AgentState.callback(context),
-        session: SessionView.callback(context),
-        ui: UI.from(context),
-      }),
+      Effect.provideService(
+        Callback,
+        Callback.of({
+          agent: AgentState.callback(callbackContext),
+          session: SessionView.callback(callbackContext),
+          ui: UI.from(callbackContext),
+        }),
+      ),
+      Effect.provideService(CallbackContext, callbackContext),
     );
   },
 );
@@ -79,38 +97,43 @@ export const provideProjectTrust = Effect.fn(
   "Pi.Host.provideProjectTrust",
 )(function* <Value, Error, Requirements>(
   effect: Effect.Effect<Value, Error, Requirements>,
-  context: ProjectTrustContext,
+  context: PiProjectTrustContext,
 ) {
-  return yield* Effect.provideService(
+  return yield* pipe(
     effect,
-    ProjectTrust,
-    ProjectTrust.of({
-      session: SessionView.projectTrust(context),
-      ui: UI.fromProjectTrust(context),
-    }),
+    Effect.provideService(
+      ProjectTrust,
+      ProjectTrust.of({
+        session: SessionView.projectTrust(context),
+        ui: UI.fromProjectTrust(context),
+      }),
+    ),
+    Effect.provideService(ProjectTrustContext, context),
   );
 });
 
 export const provideCommand = Effect.fn("Pi.Host.provideCommand")(
   function* <Value, Error, Requirements>(
     effect: Effect.Effect<Value, Error, Requirements>,
-    context: ExtensionCommandContext,
+    callbackContext: ExtensionCommandContext,
   ) {
     return yield* pipe(
       effect,
       Effect.provideService(
         Callback,
         Callback.of({
-          agent: AgentState.callback(context),
-          session: SessionView.callback(context),
-          ui: UI.from(context),
+          agent: AgentState.callback(callbackContext),
+          session: SessionView.callback(callbackContext),
+          ui: UI.from(callbackContext),
         }),
       ),
+      Effect.provideService(CallbackContext, callbackContext),
+      Effect.provideService(CommandContext, callbackContext),
       Effect.provideService(
         Command,
         Command.of({
-          agent: AgentState.command(context),
-          session: SessionView.command(context),
+          agent: AgentState.command(callbackContext),
+          session: SessionView.command(callbackContext),
         }),
       ),
     );

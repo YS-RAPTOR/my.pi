@@ -16,14 +16,6 @@ import {
 } from "./parts.ts";
 import type { Interface as Runway } from "./runway/index.ts";
 
-export type View = Readonly<{
-  sessionManager: ExtensionContext["sessionManager"];
-  modelRegistry: ExtensionContext["modelRegistry"];
-  model: ExtensionContext["model"];
-  thinkingLevel: ExtensionContext["thinkingLevel"];
-  contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
-}>;
-
 type EntryUsage = Readonly<{
   input: number;
   output: number;
@@ -66,7 +58,7 @@ const addUsage = (totals: UsageTotals, usage: EntryUsage): void => {
   totals.cost += usage.cost.total;
 };
 
-const collectUsage = (view: View): UsageTotals => {
+const collectUsage = (view: ExtensionContext): UsageTotals => {
   const totals: UsageTotals = {
     input: 0,
     output: 0,
@@ -98,7 +90,7 @@ const collectUsage = (view: View): UsageTotals => {
   return totals;
 };
 
-const subscriptionBacked = (view: View): boolean => {
+const subscriptionBacked = (view: ExtensionContext): boolean => {
   const selected = view.model;
   if (!selected) return false;
   if (selected.provider === "kimi-coding") return true;
@@ -170,21 +162,21 @@ const renderRow = (
   return align(renderSide("left"), renderSide("right"), width);
 };
 
-export class FrameFooter implements Component {
-  private readonly getView: () => View;
+export class FooterComponent implements Component {
+  private readonly context: ExtensionContext;
   private readonly theme: Theme;
   private readonly footerData: ReadonlyFooterDataProvider;
   private readonly runway: Runway;
   private readonly unsubscribeBranch: () => void;
 
   constructor(
-    getView: () => View,
+    context: ExtensionContext,
     theme: Theme,
     footerData: ReadonlyFooterDataProvider,
     runway: Runway,
     requestRender: () => void,
   ) {
-    this.getView = getView;
+    this.context = context;
     this.theme = theme;
     this.footerData = footerData;
     this.runway = runway;
@@ -198,9 +190,9 @@ export class FrameFooter implements Component {
   }
 
   render(width: number): Array<string> {
-    const view = this.getView();
+    const view = this.context;
     const usage = collectUsage(view);
-    const contextUsage = view.contextUsage;
+    const contextUsage = view.getContextUsage();
     const cwdVariants = cwd(
       {
         cwd: view.sessionManager.getCwd(),

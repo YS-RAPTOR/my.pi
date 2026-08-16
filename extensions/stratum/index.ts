@@ -5,7 +5,7 @@ import { Config } from "#s/config";
 import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
 import { Shell } from "#s/features/shell";
-import { Frame } from "#s/frame";
+import { Footer } from "#s/footer";
 import { Pi } from "#s/pi";
 
 const platform = NodeServices.layer;
@@ -24,11 +24,8 @@ export const layer = (pi: ExtensionAPI) => {
     dependencies,
     pipe(BetterSkills.layer, Layer.provide(dependencies)),
     activity,
+    pipe(Footer.layer, Layer.provide(dependencies)),
     shell,
-    pipe(
-      Frame.layer,
-      Layer.provide(Layer.merge(dependencies, shell)),
-    ),
   );
 };
 
@@ -46,6 +43,6 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
 export { Shell } from "#s/features/shell";
-export { Frame } from "#s/frame";
+export { Footer } from "#s/footer";
 export { Pi } from "#s/pi";
 export default Stratum;

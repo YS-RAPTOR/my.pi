@@ -23,12 +23,16 @@ export type Handler<Type extends BarrierType> = (
 ) => Effect.Effect<
   void,
   never,
-  Host.Service | Host.Callback
+  Host.Service | Host.Callback | Host.CallbackContext
 >;
 
 type AnyHandler = (
   barrier: Value,
-) => Effect.Effect<void, never, Host.Service | Host.Callback>;
+) => Effect.Effect<
+  void,
+  never,
+  Host.Service | Host.Callback | Host.CallbackContext
+>;
 type State = HashMap.HashMap<BarrierType, Chunk.Chunk<AnyHandler>>;
 
 export type Interface = Readonly<{
@@ -42,7 +46,7 @@ export type Interface = Readonly<{
   ) => Effect.Effect<
     void,
     never,
-    Host.Service | Host.Callback
+    Host.Service | Host.Callback | Host.CallbackContext
   >;
 }>;
 

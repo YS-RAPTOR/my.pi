@@ -25,11 +25,19 @@ export type Handled = Array<NotificationType>;
 
 export type Listener<Type extends NotificationType, Error = never> = (
   notification: NotificationOf<Type>,
-) => Effect.Effect<void, Error, Host.Service | Host.Callback>;
+) => Effect.Effect<
+  void,
+  Error,
+  Host.Service | Host.Callback | Host.CallbackContext
+>;
 
 type AnyListener = (
   notification: Value,
-) => Effect.Effect<void, unknown, Host.Service | Host.Callback>;
+) => Effect.Effect<
+  void,
+  unknown,
+  Host.Service | Host.Callback | Host.CallbackContext
+>;
 type ListenerBucket = SynchronizedRef.SynchronizedRef<Chunk.Chunk<AnyListener>>;
 type Listeners = HashMap.HashMap<NotificationType, ListenerBucket>;
 
@@ -154,7 +162,11 @@ export const layer = Layer.effect(
       const erased: AnyListener = (notification) =>
         listener(
           notification as NotificationOf<Types[number]>,
-        ) as Effect.Effect<void, Error, Host.Service | Host.Callback>;
+        ) as Effect.Effect<
+          void,
+          Error,
+          Host.Service | Host.Callback | Host.CallbackContext
+        >;
       for (const type of HashSet.fromIterable(types)) {
         const bucket = yield* getOrCreate(
           listeners,

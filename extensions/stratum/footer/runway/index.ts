@@ -47,14 +47,16 @@ type State = Readonly<{
 }>;
 
 export type Interface = Readonly<{
-  enable: (requestRender: () => void) => Effect.Effect<void>;
-  update: (context: RunwayContext) => Effect.Effect<void>;
+  enable: (
+    context: RunwayContext,
+    requestRender: () => void,
+  ) => Effect.Effect<void>;
   variants: (theme: Theme) => ReadonlyArray<FooterVariant>;
   disable: Effect.Effect<void>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()(
-  "stratum/Frame.Footer.Runway",
+  "stratum/Footer.Runway",
 ) {}
 
 const fixedVariant = (id: string, text: string): FooterVariant => {
@@ -83,7 +85,7 @@ export const layer = Layer.effect(
       if (Option.isSome(requestRender)) requestRender.value();
     });
 
-    const refresh = Effect.fn("Frame.Footer.Runway.__refresh")(function* () {
+    const refresh = Effect.fn("Footer.Runway.__refresh")(function* () {
       const current = yield* SynchronizedRef.get(state);
       if (
         Option.isNone(current.requestRender) ||
@@ -143,36 +145,14 @@ export const layer = Layer.effect(
       );
     });
 
-    const enable: Interface["enable"] = Effect.fn("Frame.Footer.Runway.enable")(
-      function* (requestRender) {
-        const starting = yield* SynchronizedRef.modify(state, (current) => [
-          Option.isNone(current.requestRender),
-          { ...current, requestRender: Option.some(requestRender) },
-        ]);
-        if (starting) yield* refresh();
-        yield* redraw;
-      },
-    );
-
-    const update: Interface["update"] = Effect.fn("Frame.Footer.Runway.update")(
-      function* (context) {
-        const shouldRefresh = yield* SynchronizedRef.modify(
-          state,
-          (current) => {
-            const activating =
-              isCodexContext(context) &&
-              Option.match(current.context, {
-                onNone: () => true,
-                onSome: (previous) => !isCodexContext(previous),
-              });
-            return [
-              Option.isSome(current.requestRender) &&
-                (activating || !Predicate.isTagged(current.display, "report")),
-              { ...current, context: Option.some(context) },
-            ];
-          },
-        );
-        if (shouldRefresh) yield* refresh();
+    const enable: Interface["enable"] = Effect.fn("Footer.Runway.enable")(
+      function* (context, requestRender) {
+        yield* SynchronizedRef.update(state, (current) => ({
+          ...current,
+          context: Option.some(context),
+          requestRender: Option.some(requestRender),
+        }));
+        yield* refresh();
         yield* redraw;
       },
     );
@@ -220,7 +200,7 @@ export const layer = Layer.effect(
         requestRender: Option.none(),
       }));
       yield* FiberMap.remove(queries, "query");
-    }).pipe(Effect.withSpan("Frame.Footer.Runway.disable"));
+    }).pipe(Effect.withSpan("Footer.Runway.disable"));
 
     yield* pipe(
       refresh(),
@@ -253,7 +233,7 @@ export const layer = Layer.effect(
     );
     yield* Effect.addFinalizer(() => disable);
 
-    return Service.of({ enable, update, variants, disable });
+    return Service.of({ enable, variants, disable });
   }),
 );
 
