@@ -5,15 +5,16 @@
     "pi-package"
   ],
   "workspaces": [
-    "extensions/stratum"
+    "extensions/*",
+    "packages/*"
   ],
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('node_modules', { force: true, recursive: true })\"",
     "check": "npm run typecheck && npm run lint",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings extensions",
-    "lint:fix": "oxlint --fix extensions",
+    "lint": "oxlint --deny-warnings extensions packages",
+    "lint:fix": "oxlint --fix extensions packages",
     "effect:patch": "effect-tsgo patch"
   },
   "devDependencies": {

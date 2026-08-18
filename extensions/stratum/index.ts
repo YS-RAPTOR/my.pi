@@ -6,7 +6,7 @@ import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
 import { Footer } from "#s/features/footer";
 import { Shell } from "#s/features/shell";
-import { Pi } from "#s/pi";
+import { Pi } from "@ys-raptor/pi-effect";
 
 const platform = NodeServices.layer;
 
@@ -44,5 +44,5 @@ export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
 export { Footer } from "#s/features/footer";
 export { Shell } from "#s/features/shell";
-export { Pi } from "#s/pi";
+export { Pi } from "@ys-raptor/pi-effect";
 export default Stratum;

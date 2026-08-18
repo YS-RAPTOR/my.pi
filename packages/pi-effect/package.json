@@ -1,0 +1,29 @@
+{
+  "name": "@ys-raptor/pi-effect",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contributions": "./src/contributions.ts",
+    "./hooks": "./src/hooks/index.ts",
+    "./host": "./src/host/index.ts"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm run lint",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint --deny-warnings src",
+    "lint:fix": "oxlint --fix src"
+  },
+  "dependencies": {
+    "effect": "4.0.0-beta.102"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}
