@@ -1,0 +1,36 @@
+{
+  "name": "@ys-raptor/orogeny.pi",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#o/jupyter": "./src/jupyter/index.ts",
+    "#o/*": "./src/*.ts"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm run lint",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix .",
+    "spike": "node --experimental-strip-types src/spike.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.102",
+    "@ys-raptor/pi-effect": "0.0.0",
+    "effect": "4.0.0-beta.102",
+    "zeromq": "6.5.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
