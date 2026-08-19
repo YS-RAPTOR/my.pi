@@ -1,13 +1,18 @@
 import {
+  Cause,
   Chunk,
   Context,
   Data,
+  Deferred,
   Effect,
+  Exit,
   Layer,
   Match,
   Option,
   pipe,
+  Queue,
   Ref,
+  Result,
   Schedule,
   Schema,
   Scope,
@@ -55,6 +60,8 @@ export type Output = Data.TaggedEnum<{
   display: {
     readonly kind: "execute_result" | "display_data" | "update_display_data";
     readonly data: MimeBundle;
+    readonly metadata: Schema.Json;
+    readonly transient: Option.Option<Schema.Json>;
   };
   error: {
     readonly name: string;
@@ -70,7 +77,6 @@ export const Output = Data.taggedEnum<Output>();
 
 export class ExecutionResult extends Data.Class<{
   readonly status: "succeeded" | "failed";
-  readonly outputs: Chunk.Chunk<Output>;
   readonly reply: ExecuteReplyContent;
 }> {}
 
@@ -81,10 +87,14 @@ export class OperationFailed extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class Execution extends Data.Class<{
+  readonly requestId: string;
+  readonly outputs: Stream.Stream<Output, OperationFailed>;
+  readonly completion: Effect.Effect<ExecutionResult, OperationFailed>;
+}> {}
+
 export class Handle extends Data.Class<{
-  readonly execute: (
-    code: string,
-  ) => Effect.Effect<ExecutionResult, OperationFailed>;
+  readonly start: (code: string) => Effect.Effect<Execution, OperationFailed>;
   readonly interrupt: Effect.Effect<void, OperationFailed>;
   readonly shutdown: Effect.Effect<void, OperationFailed>;
 }> {}
@@ -103,6 +113,21 @@ const mapOperation = (operation: string) =>
   Effect.mapError(
     (cause: unknown) =>
       new OperationFailed({ operation, message: messageFrom(cause) }),
+  );
+
+const operationFailureFromCause = (
+  cause: Cause.Cause<OperationFailed>,
+): OperationFailed =>
+  pipe(
+    Cause.findError(cause),
+    Result.match({
+      onFailure: (failure) =>
+        new OperationFailed({
+          operation: "run Jupyter execution",
+          message: Cause.pretty(failure),
+        }),
+      onSuccess: (failure) => failure,
+    }),
   );
 
 const parentMessageId = (message: JupyterMessage): Option.Option<string> =>
@@ -124,6 +149,7 @@ export const layer = Layer.effect(
 
     const open: Interface["open"] = Effect.fn("Jupyter.Kernel.open")(
       function* (input) {
+        const scope = yield* Effect.scope;
         const artifact = yield* connections.open.pipe(
           mapOperation("create Jupyter connection information"),
         );
@@ -328,7 +354,14 @@ export const layer = Layer.effect(
                   Schema.decodeUnknownEffect(DisplayContent)(message.content),
                   mapOperation("validate Jupyter display output"),
                   Effect.map((content) =>
-                    Option.some(Output.display({ kind, data: content.data })),
+                    Option.some(
+                      Output.display({
+                        kind,
+                        data: content.data,
+                        metadata: content.metadata,
+                        transient: Option.fromUndefinedOr(content.transient),
+                      }),
+                    ),
                   ),
                 ),
             ),
@@ -439,8 +472,11 @@ export const layer = Layer.effect(
           },
         );
 
-        const collectIopub = Effect.fn("Jupyter.Kernel.__collectIopub")(
-          function* (requestId: string) {
+        const publishIopub = Effect.fn("Jupyter.Kernel.__publishIopub")(
+          function* (
+            requestId: string,
+            outputQueue: Queue.Enqueue<Output, OperationFailed | Cause.Done>,
+          ) {
             return yield* pipe(
               messageStream(iopub),
               Stream.filter((message) =>
@@ -450,54 +486,101 @@ export const layer = Layer.effect(
               Stream.mapEffect(decodeIopubOutput),
               Stream.filter(Option.isSome),
               Stream.map((output) => output.value),
-              Stream.runCollect,
-              Effect.map(Chunk.fromIterable),
+              Stream.runForEach((output) => Queue.offer(outputQueue, output)),
             );
           },
         );
 
-        const execute: Handle["execute"] = (code) =>
-          shellRequests.withPermit(
-            Effect.gen(function* () {
-              yield* ensureOpen();
-              const content = yield* Schema.decodeUnknownEffect(
-                ExecuteRequestContent,
-              )({
-                code,
-                silent: false,
-                store_history: true,
-                user_expressions: {},
-                allow_stdin: false,
-                stop_on_error: false,
-              }).pipe(mapOperation("validate Jupyter execute_request"));
-              const request = yield* sendRequest(
-                shell,
-                "execute_request",
-                content,
-              );
-              const { replyMessage, outputs } = yield* Effect.all(
-                {
-                  replyMessage: receiveReply(
-                    shell,
-                    request.header.msg_id,
-                    "execute_reply",
-                  ),
-                  outputs: collectIopub(request.header.msg_id),
-                },
-                { concurrency: "unbounded" },
-              );
-              const reply = yield* Schema.decodeUnknownEffect(
-                ExecuteReplyContent,
-              )(replyMessage.content).pipe(
-                mapOperation("validate Jupyter execute_reply"),
-              );
-              return new ExecutionResult({
-                status: reply.status === "ok" ? "succeeded" : "failed",
-                outputs,
-                reply,
-              });
-            }),
-          );
+        const start: Handle["start"] = Effect.fn("Jupyter.Kernel.start")(
+          function* (code) {
+            const outputQueue = yield* Queue.unbounded<
+              Output,
+              OperationFailed | Cause.Done
+            >();
+            const started = yield* Deferred.make<string, OperationFailed>();
+            const completion = yield* Deferred.make<
+              ExecutionResult,
+              OperationFailed
+            >();
+
+            const coordinator = shellRequests.withPermit(
+              Effect.gen(function* () {
+                yield* ensureOpen();
+                const content = yield* Schema.decodeUnknownEffect(
+                  ExecuteRequestContent,
+                )({
+                  code,
+                  silent: false,
+                  store_history: true,
+                  user_expressions: {},
+                  allow_stdin: false,
+                  stop_on_error: false,
+                }).pipe(mapOperation("validate Jupyter execute_request"));
+                const request = yield* sendRequest(
+                  shell,
+                  "execute_request",
+                  content,
+                );
+                yield* Deferred.succeed(started, request.header.msg_id);
+
+                const { replyMessage } = yield* Effect.all(
+                  {
+                    replyMessage: receiveReply(
+                      shell,
+                      request.header.msg_id,
+                      "execute_reply",
+                    ),
+                    outputs: publishIopub(request.header.msg_id, outputQueue),
+                  },
+                  { concurrency: "unbounded" },
+                );
+                const reply = yield* Schema.decodeUnknownEffect(
+                  ExecuteReplyContent,
+                )(replyMessage.content).pipe(
+                  mapOperation("validate Jupyter execute_reply"),
+                );
+                return new ExecutionResult({
+                  status: reply.status === "ok" ? "succeeded" : "failed",
+                  reply,
+                });
+              }),
+            );
+
+            const finalized = pipe(
+              coordinator,
+              Effect.onExit((exit) =>
+                Exit.match(exit, {
+                  onFailure: (cause) => {
+                    const failure = operationFailureFromCause(cause);
+                    return pipe(
+                      Effect.all(
+                        {
+                          outputs: Queue.fail(outputQueue, failure),
+                          started: Deferred.fail(started, failure),
+                        },
+                        { discard: true },
+                      ),
+                      Effect.asVoid,
+                    );
+                  },
+                  onSuccess: () => Queue.end(outputQueue).pipe(Effect.asVoid),
+                }),
+              ),
+            );
+            yield* pipe(
+              finalized,
+              Deferred.into(completion),
+              Effect.forkIn(scope),
+            );
+
+            const requestId = yield* Deferred.await(started);
+            return new Execution({
+              requestId,
+              outputs: Stream.fromQueue(outputQueue),
+              completion: Deferred.await(completion),
+            });
+          },
+        );
 
         const interrupt: Handle["interrupt"] = controlRequests.withPermit(
           Effect.gen(function* () {
@@ -571,7 +654,7 @@ export const layer = Layer.effect(
           }),
         );
 
-        return new Handle({ execute, interrupt, shutdown });
+        return new Handle({ start, interrupt, shutdown });
       },
     );
 
