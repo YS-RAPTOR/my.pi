@@ -1,16 +1,20 @@
 import { stripVTControlCharacters } from "node:util";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import {
+  Chunk,
   Console,
   Data,
+  Deferred,
   Effect,
   Fiber,
   Layer,
   Option,
   pipe,
+  Ref,
   Schema,
+  Stream,
 } from "effect";
-import { Jupyter } from "#o/jupyter";
+import * as Jupyter from "#o/jupyter";
 
 class PlainTextBundle extends Schema.Opaque<PlainTextBundle>()(
   Schema.Struct({ "text/plain": Schema.String }),
@@ -20,6 +24,11 @@ class AssertionFailed extends Data.TaggedError("SpikeAssertionFailed")<{
   readonly message: string;
 }> {}
 
+class CapturedExecution extends Data.Class<{
+  readonly result: Jupyter.ExecutionResult;
+  readonly outputs: Chunk.Chunk<Jupyter.Output>;
+}> {}
+
 const assert = (
   condition: boolean,
   message: string,
@@ -27,42 +36,121 @@ const assert = (
   condition ? Effect.void : Effect.fail(new AssertionFailed({ message }));
 
 const plainText = (
-  result: Jupyter.Kernel.ExecutionResult,
-): Option.Option<string> => {
-  for (const output of result.outputs) {
-    if (!Jupyter.Kernel.Output.$is("display")(output)) continue;
-    const bundle = Schema.decodeUnknownOption(PlainTextBundle)(output.data);
-    if (Option.isSome(bundle)) return Option.some(bundle.value["text/plain"]);
-  }
-  return Option.none();
-};
+  outputs: Chunk.Chunk<Jupyter.Output>,
+): Option.Option<string> =>
+  pipe(
+    outputs,
+    Chunk.filter(Jupyter.Output.$is("display")),
+    Chunk.map((output) =>
+      Schema.decodeUnknownOption(PlainTextBundle)(output.data),
+    ),
+    Chunk.filter(Option.isSome),
+    Chunk.map((bundle) => bundle.value["text/plain"]),
+    Chunk.head,
+  );
 
-const requirePlainText = Effect.fn("OrogenySpike.requirePlainText")(
-  function* (result: Jupyter.Kernel.ExecutionResult) {
-    const value = plainText(result);
-    if (Option.isSome(value)) return value.value;
-    return yield* new AssertionFailed({
-      message: "The execution did not emit a text/plain result",
-    });
-  },
-);
+const requirePlainText = Effect.fn("OrogenySpike.requirePlainText")(function* (
+  outputs: Chunk.Chunk<Jupyter.Output>,
+) {
+  const value = plainText(outputs);
+  if (Option.isSome(value)) return value.value;
+  return yield* new AssertionFailed({
+    message: "The execution did not emit a text/plain result",
+  });
+});
+
+const capture = Effect.fn("OrogenySpike.capture")(function* (
+  execution: Jupyter.Execution,
+) {
+  const { result, outputs } = yield* Effect.all(
+    {
+      result: execution.completion,
+      outputs: pipe(
+        execution.outputs,
+        Stream.runCollect,
+        Effect.map(Chunk.fromIterable),
+      ),
+    },
+    { concurrency: "unbounded" },
+  );
+  return new CapturedExecution({ result, outputs });
+});
+
+const run = Effect.fn("OrogenySpike.run")(function* (
+  kernel: Jupyter.Handle,
+  code: string,
+) {
+  return yield* capture(yield* kernel.start(code));
+});
 
 const program = Effect.gen(function* () {
-  const kernels = yield* Jupyter.Kernel.Service;
-  const kernel = yield* kernels.open();
+  const kernels = yield* Jupyter.Service;
+  const kernel = yield* kernels.open;
 
-  const declaration = yield* kernel.execute("let x = 41");
+  const incremental = yield* kernel.start(`
+console.log("incremental-ready");
+await new Promise((resolve) => setTimeout(resolve, 750));
+"incremental-done";
+`);
+  const firstOutput = yield* Deferred.make<Jupyter.Output>();
+  const capturedOutputs = yield* Ref.make(Chunk.empty<Jupyter.Output>());
+  const drain = yield* pipe(
+    incremental.outputs,
+    Stream.runForEach((output) =>
+      pipe(
+        Ref.update(capturedOutputs, Chunk.append(output)),
+        Effect.andThen(Deferred.succeed(firstOutput, output)),
+        Effect.asVoid,
+      ),
+    ),
+    Effect.forkChild,
+  );
+  const completion = yield* incremental.completion.pipe(Effect.forkChild);
+  const observed = yield* Deferred.await(firstOutput).pipe(
+    Effect.timeoutOrElse({
+      duration: "5 seconds",
+      orElse: () =>
+        Effect.fail(
+          new AssertionFailed({
+            message: "The execution did not publish incremental output",
+          }),
+        ),
+    }),
+  );
+  const completionState = yield* Fiber.join(completion).pipe(
+    Effect.timeoutOption(0),
+  );
   yield* assert(
-    declaration.status === "succeeded",
+    Option.isNone(completionState),
+    "The execution completed before its first output was observed",
+  );
+  const observedText = Jupyter.Output.$is("stream")(observed)
+    ? stripVTControlCharacters(observed.text)
+    : "";
+  yield* assert(
+    observedText.includes("incremental-ready"),
+    "The first incremental output was not the expected stream event",
+  );
+  const incrementalResult = yield* Fiber.join(completion);
+  yield* Fiber.join(drain);
+  yield* assert(
+    incrementalResult.status === "succeeded",
+    "The incremental execution failed",
+  );
+  yield* Console.log("incremental output: observed before completion");
+
+  const declaration = yield* run(kernel, "let x = 41");
+  yield* assert(
+    declaration.result.status === "succeeded",
     "The state declaration failed",
   );
 
-  const persisted = yield* kernel.execute("x + 1");
+  const persisted = yield* run(kernel, "x + 1");
   yield* assert(
-    persisted.status === "succeeded",
+    persisted.result.status === "succeeded",
     "The persisted-state execution failed",
   );
-  const persistedText = yield* requirePlainText(persisted);
+  const persistedText = yield* requirePlainText(persisted.outputs);
   const persistedValue = stripVTControlCharacters(persistedText).trim();
   yield* assert(
     persistedValue === "42",
@@ -70,9 +158,9 @@ const program = Effect.gen(function* () {
   );
   yield* Console.log(`persistent state: ${persistedValue}`);
 
-  const running = yield* kernel
-    .execute("while (true) {}")
-    .pipe(Effect.forkChild);
+  const running = yield* capture(yield* kernel.start("while (true) {}")).pipe(
+    Effect.forkChild,
+  );
   yield* Effect.sleep(250);
   yield* kernel.interrupt;
   const interrupted = yield* Fiber.join(running).pipe(
@@ -87,17 +175,17 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* assert(
-    interrupted.status === "failed",
-    `Expected interrupted execution to fail, received ${interrupted.status}`,
+    interrupted.result.status === "failed",
+    `Expected interrupted execution to fail, received ${interrupted.result.status}`,
   );
   yield* Console.log("interrupt: settled");
 
-  const recovered = yield* kernel.execute("1 + 1");
+  const recovered = yield* run(kernel, "1 + 1");
   yield* assert(
-    recovered.status === "succeeded",
+    recovered.result.status === "succeeded",
     "The kernel did not recover after interruption",
   );
-  const recoveredText = yield* requirePlainText(recovered);
+  const recoveredText = yield* requirePlainText(recovered.outputs);
   const recoveredValue = stripVTControlCharacters(recoveredText).trim();
   yield* assert(
     recoveredValue === "2",
@@ -106,14 +194,9 @@ const program = Effect.gen(function* () {
   yield* Console.log(`post-interrupt execution: ${recoveredValue}`);
 
   yield* kernel.shutdown;
-  yield* Console.log("orogeny transport spike: passed");
+  yield* Console.log("orogeny incremental kernel spike: passed");
 });
 
 const mainLayer = Jupyter.layer.pipe(Layer.provide(NodeServices.layer));
 
-pipe(
-  program,
-  Effect.scoped,
-  Effect.provide(mainLayer),
-  NodeRuntime.runMain,
-);
+pipe(program, Effect.scoped, Effect.provide(mainLayer), NodeRuntime.runMain);

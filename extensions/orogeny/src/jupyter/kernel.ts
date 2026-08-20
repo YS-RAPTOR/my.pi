@@ -1,4 +1,7 @@
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { NodeSocketServer } from "@effect/platform-node";
 import {
+  Array as Arr,
   Cause,
   Chunk,
   Context,
@@ -6,10 +9,15 @@ import {
   Deferred,
   Effect,
   Exit,
+  Fiber,
+  FileSystem,
+  Filter,
   Layer,
   Match,
   Option,
+  Path,
   pipe,
+  Predicate,
   Queue,
   Ref,
   Result,
@@ -20,43 +28,250 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { messageFrom } from "#o/error";
-import { Connection } from "#o/jupyter/connection";
-import {
-  ClearOutputContent,
-  DisplayContent,
-  ErrorContent,
-  ExecuteReplyContent,
-  ExecuteRequestContent,
-  InterruptReplyContent,
-  InterruptRequestContent,
-  JupyterHeader,
-  JupyterMessage,
-  type JupyterRequestContent,
-  KernelInfoReplyContent,
-  KernelInfoRequestContent,
-  MimeBundle,
-  ShutdownReplyContent,
-  ShutdownRequestContent,
-  StatusContent,
-  StreamContent,
-} from "#o/jupyter/schema";
-import { Codec } from "#o/jupyter/codec";
-import { Transport } from "#o/jupyter/transport";
+import { context, Dealer, Subscriber } from "zeromq";
 
-const DEFAULT_DENO_EXECUTABLE = "deno";
-const DIAGNOSTIC_BYTES = 64 * 1024;
-const IOPUB_PROBE_ATTEMPTS = 40;
+const HOST = "127.0.0.1";
+const DELIMITER = new TextEncoder().encode("<IDS|MSG>");
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
-export class OpenInput extends Data.Class<{
-  readonly denoExecutable: string;
+const Port = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 65_535 }),
+);
+class ConnectionInfo extends Schema.Class<ConnectionInfo>("ConnectionInfo")({
+  ip: Schema.Literal(HOST),
+  transport: Schema.Literal("tcp"),
+  shell_port: Port,
+  iopub_port: Port,
+  stdin_port: Port,
+  control_port: Port,
+  hb_port: Port,
+  signature_scheme: Schema.Literal("hmac-sha256"),
+  key: Schema.String,
+  kernel_name: Schema.Literal("deno"),
+}) {}
+class Header extends Schema.Class<Header>("Header")({
+  msg_id: Schema.String,
+  session: Schema.String,
+  username: Schema.String,
+  date: Schema.String,
+  msg_type: Schema.String,
+  version: Schema.String,
+}) {}
+class Message extends Schema.Class<Message>("Message")({
+  identities: Schema.Array(Schema.Uint8Array),
+  header: Header,
+  parentHeader: Schema.Json,
+  metadata: Schema.Json,
+  content: Schema.Json,
+  buffers: Schema.Array(Schema.Uint8Array),
+}) {}
+const Envelope = Schema.TupleWithRest(
+  Schema.Tuple([
+    Schema.Uint8Array,
+    Schema.Uint8Array,
+    Schema.Uint8Array,
+    Schema.Uint8Array,
+    Schema.Uint8Array,
+  ]),
+  [Schema.Uint8Array],
+);
+export class MimeBundle extends Schema.Opaque<MimeBundle>()(
+  Schema.Record(Schema.String, Schema.Json),
+) {}
+class Ok extends Schema.Class<Ok>("Ok")({ status: Schema.Literal("ok") }) {}
+class StreamOutput extends Schema.Class<StreamOutput>("StreamOutput")({
+  name: Schema.Literals(["stdout", "stderr"]),
+  text: Schema.String,
+}) {}
+class DisplayOutput extends Schema.Class<DisplayOutput>("DisplayOutput")({
+  data: MimeBundle,
+  metadata: Schema.Json,
+  transient: Schema.optionalKey(Schema.Json),
+}) {}
+class ErrorOutput extends Schema.Class<ErrorOutput>("ErrorOutput")({
+  ename: Schema.String,
+  evalue: Schema.String,
+  traceback: Schema.Array(Schema.String),
+}) {}
+class Clear extends Schema.Class<Clear>("Clear")({ wait: Schema.Boolean }) {}
+class Status extends Schema.Class<Status>("Status")({
+  execution_state: Schema.Literals(["busy", "idle", "starting"]),
+}) {}
+class Reply extends Schema.Class<Reply>("Reply")({
+  status: Schema.Literals(["ok", "error"]),
+  evalue: Schema.optionalKey(Schema.String),
+}) {}
+const HeaderJson = Schema.fromJsonString(Header);
+const JsonFrame = Schema.fromJsonString(Schema.Json);
+
+type FailureData = { readonly operation: string; readonly message: string };
+export class OperationFailed extends Data.TaggedError("Jupyter")<FailureData> {}
+const failed = (operation: string, cause: unknown) =>
+  new OperationFailed({ operation, message: String(cause) });
+const mapFailed = (operation: string) =>
+  Effect.mapError((cause: unknown) => failed(operation, cause));
+
+class Signed extends Data.Class<{
+  readonly header: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly metadata: Uint8Array;
+  readonly content: Uint8Array;
 }> {}
+const equal = (a: Uint8Array, b: Uint8Array) =>
+  a.length === b.length && timingSafeEqual(a, b);
+const signedFrames = (value: Signed) =>
+  Chunk.make(value.header, value.parent, value.metadata, value.content);
+const signature = (value: Signed, key: string) =>
+  encoder.encode(
+    createHmac("sha256", key)
+      .update(value.header)
+      .update(value.parent)
+      .update(value.metadata)
+      .update(value.content)
+      .digest("hex"),
+  );
+const createMessage = (type: string, content: Schema.Json, session: string) =>
+  Schema.decodeUnknownEffect(Message)({
+    identities: [],
+    header: {
+      msg_id: randomUUID(),
+      session,
+      username: "orogeny",
+      date: new Date().toISOString(),
+      msg_type: type,
+      version: "5.3",
+    },
+    parentHeader: {},
+    metadata: {},
+    content,
+    buffers: [],
+  }).pipe(mapFailed(`create Jupyter ${type}`));
+const encodeMessage = Effect.fn("Jupyter.encode")(function* (
+  message: Message,
+  key: string,
+) {
+  const json = yield* Effect.all({
+    header: Schema.encodeEffect(HeaderJson)(message.header),
+    parent: Schema.encodeEffect(JsonFrame)(message.parentHeader),
+    metadata: Schema.encodeEffect(JsonFrame)(message.metadata),
+    content: Schema.encodeEffect(JsonFrame)(message.content),
+  }).pipe(mapFailed("encode Jupyter message"));
+  const signed = new Signed({
+    header: encoder.encode(json.header),
+    parent: encoder.encode(json.parent),
+    metadata: encoder.encode(json.metadata),
+    content: encoder.encode(json.content),
+  });
+  return pipe(
+    Chunk.fromIterable<Uint8Array>(message.identities),
+    Chunk.append(DELIMITER),
+    Chunk.append(signature(signed, key)),
+    Chunk.appendAll(signedFrames(signed)),
+    Chunk.appendAll(Chunk.fromIterable(message.buffers)),
+  );
+});
+const decodeMessage = Effect.fn("Jupyter.decode")(function* (
+  frames: Chunk.Chunk<Uint8Array>,
+  key: string,
+) {
+  const [identities, rest] = Chunk.splitWhere(frames, (frame) =>
+    equal(frame, DELIMITER),
+  );
+  if (Chunk.isEmpty(rest))
+    return yield* failed("decode Jupyter envelope", "Missing delimiter");
+  const [supplied, header, parent, metadata, content, ...buffers] =
+    yield* Schema.decodeUnknownEffect(Envelope)(
+      Chunk.toReadonlyArray(Chunk.drop(rest, 1)),
+    ).pipe(mapFailed("decode Jupyter envelope"));
+  const signed = new Signed({ header, parent, metadata, content });
+  if (!equal(supplied, signature(signed, key)))
+    return yield* failed("verify Jupyter message", "Invalid signature");
+  const json = yield* Effect.all({
+    header: Schema.decodeUnknownEffect(HeaderJson)(decoder.decode(header)),
+    parentHeader: Schema.decodeUnknownEffect(JsonFrame)(decoder.decode(parent)),
+    metadata: Schema.decodeUnknownEffect(JsonFrame)(decoder.decode(metadata)),
+    content: Schema.decodeUnknownEffect(JsonFrame)(decoder.decode(content)),
+  }).pipe(mapFailed("decode Jupyter message"));
+  return yield* Schema.decodeUnknownEffect(Message)({
+    identities: Chunk.toReadonlyArray(identities),
+    ...json,
+    buffers,
+  }).pipe(mapFailed("validate Jupyter message"));
+});
+
+class Channel extends Data.Class<{
+  readonly receive: () => Effect.Effect<
+    Chunk.Chunk<Uint8Array>,
+    OperationFailed
+  >;
+  readonly send: (
+    frames: Chunk.Chunk<Uint8Array>,
+  ) => Effect.Effect<void, OperationFailed>;
+}> {}
+const configure = <Socket extends Dealer | Subscriber>(socket: Socket) => {
+  socket.handshakeInterval = 5_000;
+  socket.linger = 0;
+  socket.maxMessageSize = 2 * 1024 * 1024 * 1024 - 1;
+  return socket;
+};
+const acquireSocket = <Socket extends Dealer | Subscriber>(
+  address: string,
+  make: () => Socket,
+) =>
+  Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        const socket = configure(make());
+        socket.connect(address);
+        return socket;
+      },
+      catch: (cause) => failed(`connect ZeroMQ ${address}`, cause),
+    }),
+    (socket) => Effect.sync(() => socket.close()),
+  );
+const makeReceiver = Effect.fn("Jupyter.receiver")(function* (
+  socket: Dealer | Subscriber,
+  operation: string,
+) {
+  const queue = yield* pipe(
+    Stream.fromAsyncIterable(socket, (cause) => failed(operation, cause)),
+    Stream.map((frames) => Chunk.fromIterable<Uint8Array>(frames)),
+    Stream.toQueue({ capacity: 64 }),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
+  return () => Queue.take(queue).pipe(mapFailed(operation));
+});
+const dealer = Effect.fn("Jupyter.dealer")(function* (address: string) {
+  const socket = yield* acquireSocket(address, () => {
+    const socket = new Dealer();
+    socket.sendTimeout = 5_000;
+    return socket;
+  });
+  const receive = yield* makeReceiver(socket, `receive ZeroMQ ${address}`);
+  const lock = yield* Semaphore.make(1);
+  return new Channel({
+    receive,
+    send: (frames) =>
+      lock.withPermit(
+        Effect.tryPromise({
+          try: () => socket.send(Array.from(frames)),
+          catch: (cause) => failed(`send ZeroMQ ${address}`, cause),
+        }),
+      ),
+  });
+});
+const subscriber = Effect.fn("Jupyter.subscriber")(function* (address: string) {
+  const socket = yield* acquireSocket(address, () => {
+    const socket = new Subscriber();
+    socket.subscribe();
+    return socket;
+  });
+  return yield* makeReceiver(socket, `receive ZeroMQ ${address}`);
+});
 
 export type Output = Data.TaggedEnum<{
-  stream: {
-    readonly name: "stdout" | "stderr";
-    readonly text: string;
-  };
+  stream: { readonly name: "stdout" | "stderr"; readonly text: string };
   display: {
     readonly kind: "execute_result" | "display_data" | "update_display_data";
     readonly data: MimeBundle;
@@ -68,598 +283,393 @@ export type Output = Data.TaggedEnum<{
     readonly value: string;
     readonly traceback: Chunk.Chunk<string>;
   };
-  clear: {
-    readonly wait: boolean;
-  };
+  clear: { readonly wait: boolean };
 }>;
-
 export const Output = Data.taggedEnum<Output>();
-
 export class ExecutionResult extends Data.Class<{
   readonly status: "succeeded" | "failed";
-  readonly reply: ExecuteReplyContent;
+  readonly reply: Reply;
 }> {}
-
-export class OperationFailed extends Data.TaggedError(
-  "JupyterKernelOperationFailed",
-)<{
-  readonly operation: string;
-  readonly message: string;
-}> {}
-
 export class Execution extends Data.Class<{
-  readonly requestId: string;
   readonly outputs: Stream.Stream<Output, OperationFailed>;
   readonly completion: Effect.Effect<ExecutionResult, OperationFailed>;
 }> {}
-
 export class Handle extends Data.Class<{
   readonly start: (code: string) => Effect.Effect<Execution, OperationFailed>;
   readonly interrupt: Effect.Effect<void, OperationFailed>;
   readonly shutdown: Effect.Effect<void, OperationFailed>;
 }> {}
-
 export type Interface = Readonly<{
-  open: (
-    input?: OpenInput,
-  ) => Effect.Effect<Handle, OperationFailed, Scope.Scope>;
+  open: Effect.Effect<Handle, OperationFailed, Scope.Scope>;
 }>;
-
 export class Service extends Context.Service<Service, Interface>()(
   "orogeny/Jupyter.Kernel",
 ) {}
 
-const mapOperation = (operation: string) =>
-  Effect.mapError(
-    (cause: unknown) =>
-      new OperationFailed({ operation, message: messageFrom(cause) }),
+const connection = Effect.fn("Jupyter.connection")(function* () {
+  const files = yield* FileSystem.FileSystem;
+  const paths = yield* Path.Path;
+  const servers = yield* Effect.scoped(
+    NodeSocketServer.make({ host: HOST, port: 0 }).pipe(
+      Effect.replicateEffect(5, { concurrency: "unbounded" }),
+    ),
   );
-
-const operationFailureFromCause = (
-  cause: Cause.Cause<OperationFailed>,
-): OperationFailed =>
-  pipe(
-    Cause.findError(cause),
-    Result.match({
-      onFailure: (failure) =>
-        new OperationFailed({
-          operation: "run Jupyter execution",
-          message: Cause.pretty(failure),
-        }),
-      onSuccess: (failure) => failure,
-    }),
+  const ports = Arr.filterMap(servers, (server) =>
+    Predicate.isTagged(server.address, "TcpAddress")
+      ? Result.succeed(server.address.port)
+      : Result.failVoid,
   );
-
-const parentMessageId = (message: JupyterMessage): Option.Option<string> =>
-  Schema.decodeUnknownOption(JupyterHeader)(message.parentHeader).pipe(
+  if (!Predicate.isTupleOf(ports, 5))
+    return yield* failed("reserve Jupyter ports", "Missing TCP port");
+  const [shell, iopub, stdin, control, heartbeat] = ports;
+  const info = yield* Schema.decodeUnknownEffect(ConnectionInfo)({
+    ip: HOST,
+    transport: "tcp",
+    shell_port: shell,
+    iopub_port: iopub,
+    stdin_port: stdin,
+    control_port: control,
+    hb_port: heartbeat,
+    signature_scheme: "hmac-sha256",
+    key: Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join(""),
+    kernel_name: "deno",
+  }).pipe(mapFailed("validate Jupyter connection"));
+  const directory = yield* files
+    .makeTempDirectoryScoped({ prefix: "orogeny-deno-kernel-" })
+    .pipe(mapFailed("create Jupyter connection directory"));
+  const path = paths.join(directory, "connection.json");
+  yield* files
+    .writeFileString(path, `${JSON.stringify(info, null, 2)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    })
+    .pipe(mapFailed("write Jupyter connection"));
+  return { info, directory, path } as const;
+});
+const parentId = (message: Message) =>
+  Schema.decodeUnknownOption(Header)(message.parentHeader).pipe(
     Option.map((header) => header.msg_id),
   );
-
-const hasParentMessageId = (
-  message: JupyterMessage,
-  requestId: string,
-): boolean => Option.contains(parentMessageId(message), requestId);
 
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const connections = yield* Connection.Service;
-    const transport = yield* Transport.Service;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-
-    const open: Interface["open"] = Effect.fn("Jupyter.Kernel.open")(
-      function* (input) {
-        const scope = yield* Effect.scope;
-        const artifact = yield* connections.open.pipe(
-          mapOperation("create Jupyter connection information"),
-        );
-        const processHandle = yield* spawner
-          .spawn(
-            ChildProcess.make(
-              input?.denoExecutable ?? DEFAULT_DENO_EXECUTABLE,
-              ["jupyter", "--kernel", "--conn", artifact.path],
-              {
-                cwd: artifact.directory,
-                detached: true,
-                extendEnv: true,
-                forceKillAfter: "1 second",
-                stdin: "ignore",
-                stdout: "ignore",
-                stderr: "pipe",
-              },
-            ),
-          )
-          .pipe(mapOperation("start Deno Jupyter kernel"));
-
-        const diagnostics = yield* Ref.make("");
-        const closed = yield* Ref.make(false);
-
-        yield* pipe(
-          processHandle.stderr,
-          Stream.decodeText,
-          Stream.runForEach((text) =>
-            Ref.update(diagnostics, (current) =>
-              `${current}${text}`.slice(-DIAGNOSTIC_BYTES),
-            ),
-          ),
-          Effect.ignoreCause,
-          Effect.forkScoped,
-        );
-
-        yield* pipe(
-          processHandle.exitCode,
-          Effect.andThen(Ref.set(closed, true)),
-          Effect.ignoreCause,
-          Effect.forkScoped,
-        );
-
-        const withDiagnostics = <A, R>(
-          self: Effect.Effect<A, OperationFailed, R>,
-        ): Effect.Effect<A, OperationFailed, R> =>
-          self.pipe(
-            Effect.catch((cause) =>
-              Effect.gen(function* () {
-                const detail = (yield* Ref.get(diagnostics)).trim();
-                if (detail.length === 0) return yield* cause;
-                return yield* new OperationFailed({
-                  operation: cause.operation,
-                  message: `${cause.message}\n${detail}`,
-                });
-              }),
-            ),
-          );
-
-        const endpoint = (port: number) =>
-          new Transport.Endpoint({ host: artifact.info.ip, port });
-
-        const { shell, control, iopub } = yield* pipe(
-          Effect.all(
+    const files = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    yield* Effect.sync(() => {
+      context.blocky = false;
+    });
+    const open: Interface["open"] = Effect.gen(function* () {
+      const scope = yield* Effect.scope;
+      const artifact = yield* pipe(
+        connection(),
+        Effect.provideService(FileSystem.FileSystem, files),
+        Effect.provideService(Path.Path, paths),
+        mapFailed("open Jupyter connection"),
+      );
+      const process = yield* spawner
+        .spawn(
+          ChildProcess.make(
+            "deno",
+            ["jupyter", "--kernel", "--conn", artifact.path],
             {
-              shell: transport.dealer(endpoint(artifact.info.shell_port)),
-              control: transport.dealer(endpoint(artifact.info.control_port)),
-              iopub: transport.subscriber(endpoint(artifact.info.iopub_port)),
+              cwd: artifact.directory,
+              detached: true,
+              extendEnv: true,
+              forceKillAfter: "1 second",
+              stdin: "ignore",
+              stdout: "ignore",
+              stderr: "ignore",
             },
-            { concurrency: "unbounded" },
           ),
-          mapOperation("open Jupyter ZeroMQ channels"),
-          withDiagnostics,
+        )
+        .pipe(mapFailed("start Deno Jupyter kernel"));
+      const closed = yield* Ref.make(false);
+      const address = (port: number) => `tcp://${artifact.info.ip}:${port}`;
+      const channels = yield* Effect.all(
+        {
+          shell: dealer(address(artifact.info.shell_port)),
+          control: dealer(address(artifact.info.control_port)),
+          iopub: subscriber(address(artifact.info.iopub_port)),
+        },
+        { concurrency: "unbounded" },
+      );
+      const { shell, control, iopub } = channels;
+      const key = artifact.info.key;
+      const session = crypto.randomUUID();
+      const shellLock = yield* Semaphore.make(1);
+      const controlLock = yield* Semaphore.make(1);
+      const messages = (
+        receive: () => Effect.Effect<Chunk.Chunk<Uint8Array>, OperationFailed>,
+      ) =>
+        Stream.fromEffectRepeat(
+          receive().pipe(
+            Effect.flatMap((frames) => decodeMessage(frames, key)),
+          ),
         );
-
-        const key = artifact.info.key;
-        const session = globalThis.crypto.randomUUID();
-        const shellRequests = yield* Semaphore.make(1);
-        const controlRequests = yield* Semaphore.make(1);
-
-        const receiveMessage = Effect.fn("Jupyter.Kernel.__receiveMessage")(
-          function* (channel: Transport.Receiver | Transport.DealerChannel) {
-            const frames = yield* channel.receive.pipe(
-              mapOperation("receive Jupyter message"),
-            );
-            return yield* Codec.decode(frames, key).pipe(
-              mapOperation("decode Jupyter message"),
-            );
-          },
+      const send = Effect.fn("Jupyter.send")(function* (
+        channel: Channel,
+        type: string,
+        content: Schema.Json,
+      ) {
+        const request = yield* createMessage(type, content, session);
+        yield* channel.send(yield* encodeMessage(request, key));
+        return request;
+      });
+      const reply = Effect.fn("Jupyter.reply")(function* (
+        channel: Channel,
+        requestId: string,
+        type: string,
+      ) {
+        return yield* pipe(
+          messages(channel.receive),
+          Stream.filter(
+            (message) =>
+              Option.contains(parentId(message), requestId) &&
+              message.header.msg_type === type,
+          ),
+          Stream.runHead,
+          Effect.flatMap(
+            Effect.fromOption(() =>
+              failed(`receive Jupyter ${type}`, "Reply stream ended"),
+            ),
+          ),
         );
-
-        const sendRequest = Effect.fn("Jupyter.Kernel.__sendRequest")(
-          function* (
-            channel: Transport.DealerChannel,
-            type: string,
-            content: JupyterRequestContent,
-          ) {
-            const request = yield* Codec.createRequest(
-              new Codec.RequestInput({ type, content, session }),
-            ).pipe(mapOperation(`create Jupyter ${type}`));
-            const frames = yield* Codec.encode(request, key).pipe(
-              mapOperation(`encode Jupyter ${type}`),
-            );
-            yield* channel
-              .send(frames)
-              .pipe(mapOperation(`send Jupyter ${type}`));
-            return request;
-          },
+      });
+      const requestReply = Effect.fn("Jupyter.requestReply")(function* (
+        channel: Channel,
+        requestType: string,
+        replyType: string,
+        content: Schema.Json,
+      ) {
+        const request = yield* send(channel, requestType, content);
+        return yield* reply(channel, request.header.msg_id, replyType);
+      });
+      const related = (requestId: string) =>
+        messages(iopub).pipe(
+          Stream.filter((message) =>
+            Option.contains(parentId(message), requestId),
+          ),
         );
-
-        const messageStream = (
-          channel: Transport.Receiver | Transport.DealerChannel,
-        ) => Stream.fromEffectRepeat(receiveMessage(channel));
-
-        const receiveReply = Effect.fn("Jupyter.Kernel.__receiveReply")(
-          function* (
-            channel: Transport.DealerChannel,
-            requestId: string,
-            replyType: string,
-          ) {
-            return yield* pipe(
-              messageStream(channel),
-              Stream.filter(
-                (message) =>
-                  hasParentMessageId(message, requestId) &&
-                  message.header.msg_type === replyType,
-              ),
-              Stream.runHead,
-              Effect.flatMap(
-                Option.match({
-                  onNone: () =>
-                    Effect.fail(
-                      new OperationFailed({
-                        operation: `receive Jupyter ${replyType}`,
-                        message: "The Jupyter reply stream ended",
-                      }),
-                    ),
-                  onSome: (message) => Effect.succeed(message),
-                }),
-              ),
+      const idle = (message: Message) =>
+        message.header.msg_type !== "status"
+          ? Effect.succeed(false)
+          : pipe(
+              Schema.decodeUnknownEffect(Status)(message.content),
+              mapFailed("validate Jupyter status"),
+              Effect.map((value) => value.execution_state === "idle"),
             );
-          },
-        );
-
-        const requestReply = Effect.fn("Jupyter.Kernel.__requestReply")(
-          function* (
-            channel: Transport.DealerChannel,
-            requestType: string,
-            replyType: string,
-            content: JupyterRequestContent,
-          ) {
-            const request = yield* sendRequest(channel, requestType, content);
-            return yield* receiveReply(
-              channel,
-              request.header.msg_id,
-              replyType,
-            );
-          },
-        );
-
-        const isIdleMessage = Effect.fn("Jupyter.Kernel.__isIdleMessage")(
-          function* (message: JupyterMessage) {
-            return yield* pipe(
-              Match.value(message.header.msg_type),
-              Match.when("status", () =>
-                pipe(
-                  Schema.decodeUnknownEffect(StatusContent)(message.content),
-                  mapOperation("validate Jupyter kernel status"),
-                  Effect.map((content) => content.execution_state === "idle"),
-                ),
-              ),
-              Match.orElse(() => Effect.succeed(false)),
-            );
-          },
-        );
-
-        const decodeIopubOutput = Effect.fn(
-          "Jupyter.Kernel.__decodeIopubOutput",
-        )(function* (message: JupyterMessage) {
-          return yield* pipe(
-            Match.value(message.header.msg_type),
-            Match.when("stream", () =>
-              pipe(
-                Schema.decodeUnknownEffect(StreamContent)(message.content),
-                mapOperation("validate Jupyter stream output"),
-                Effect.map((content) =>
+      const decodeOutput = (message: Message) =>
+        pipe(
+          Match.value(message.header.msg_type),
+          Match.when("stream", () =>
+            Schema.decodeUnknownEffect(StreamOutput)(message.content).pipe(
+              Effect.map((value) => Option.some(Output.stream(value))),
+            ),
+          ),
+          Match.whenOr(
+            "execute_result",
+            "display_data",
+            "update_display_data",
+            (kind) =>
+              Schema.decodeUnknownEffect(DisplayOutput)(message.content).pipe(
+                Effect.map((value) =>
                   Option.some(
-                    Output.stream({
-                      name: content.name,
-                      text: content.text,
+                    Output.display({
+                      kind,
+                      data: value.data,
+                      metadata: value.metadata,
+                      transient: Option.fromUndefinedOr(value.transient),
                     }),
                   ),
                 ),
               ),
-            ),
-            Match.whenOr(
-              "execute_result",
-              "display_data",
-              "update_display_data",
-              (kind) =>
-                pipe(
-                  Schema.decodeUnknownEffect(DisplayContent)(message.content),
-                  mapOperation("validate Jupyter display output"),
-                  Effect.map((content) =>
-                    Option.some(
-                      Output.display({
-                        kind,
-                        data: content.data,
-                        metadata: content.metadata,
-                        transient: Option.fromUndefinedOr(content.transient),
-                      }),
-                    ),
-                  ),
-                ),
-            ),
-            Match.when("error", () =>
-              pipe(
-                Schema.decodeUnknownEffect(ErrorContent)(message.content),
-                mapOperation("validate Jupyter error output"),
-                Effect.map((content) =>
-                  Option.some(
-                    Output.error({
-                      name: content.ename,
-                      value: content.evalue,
-                      traceback: Chunk.fromIterable(content.traceback),
-                    }),
-                  ),
-                ),
-              ),
-            ),
-            Match.when("clear_output", () =>
-              pipe(
-                Schema.decodeUnknownEffect(ClearOutputContent)(message.content),
-                mapOperation("validate Jupyter clear output"),
-                Effect.map((content) =>
-                  Option.some(Output.clear({ wait: content.wait })),
-                ),
-              ),
-            ),
-            Match.orElse(() => Effect.succeed(Option.none<Output>())),
-          );
-        });
-
-        const receiveIopubIdle = Effect.fn("Jupyter.Kernel.__receiveIopubIdle")(
-          function* (requestId: string) {
-            return yield* pipe(
-              messageStream(iopub),
-              Stream.filter((message) =>
-                hasParentMessageId(message, requestId),
-              ),
-              Stream.filterEffect(isIdleMessage),
-              Stream.take(1),
-              Stream.runDrain,
-            );
-          },
-        );
-
-        const kernelInfoRequest = yield* Schema.decodeUnknownEffect(
-          KernelInfoRequestContent,
-        )({}).pipe(mapOperation("validate Jupyter kernel_info_request"));
-        const probeIopub = Effect.gen(function* () {
-          const request = yield* sendRequest(
-            shell,
-            "kernel_info_request",
-            kernelInfoRequest,
-          );
-          const reply = yield* receiveReply(
-            shell,
-            request.header.msg_id,
-            "kernel_info_reply",
-          ).pipe(
-            Effect.timeoutOrElse({
-              duration: "5 seconds",
-              orElse: () =>
-                Effect.fail(
-                  new OperationFailed({
-                    operation: "health-check Deno Jupyter kernel",
-                    message:
-                      "The kernel did not answer kernel_info_request within 5 seconds",
+          ),
+          Match.when("error", () =>
+            Schema.decodeUnknownEffect(ErrorOutput)(message.content).pipe(
+              Effect.map((value) =>
+                Option.some(
+                  Output.error({
+                    name: value.ename,
+                    value: value.evalue,
+                    traceback: Chunk.fromIterable(value.traceback),
                   }),
                 ),
-            }),
-          );
-          yield* Schema.decodeUnknownEffect(KernelInfoReplyContent)(
-            reply.content,
-          ).pipe(mapOperation("validate Jupyter kernel_info_reply"));
-          return Option.isSome(
-            yield* receiveIopubIdle(request.header.msg_id).pipe(
-              Effect.timeoutOption(250),
+              ),
             ),
-          );
-        });
-
-        const healthCheck = pipe(
-          probeIopub,
+          ),
+          Match.when("clear_output", () =>
+            Schema.decodeUnknownEffect(Clear)(message.content).pipe(
+              Effect.map((value) => Option.some(Output.clear(value))),
+            ),
+          ),
+          Match.orElse(() => Effect.succeed(Option.none<Output>())),
+          mapFailed("validate Jupyter output"),
+        );
+      const publish = (
+        requestId: string,
+        output: Queue.Enqueue<Output, OperationFailed | Cause.Done>,
+      ) =>
+        pipe(
+          related(requestId),
+          Stream.takeUntilEffect(idle),
+          Stream.mapEffect(decodeOutput),
+          Stream.filterMap(
+            Filter.fromPredicateOption((value: Option.Option<Output>) => value),
+          ),
+          Stream.runForEach((value) => Queue.offer(output, value)),
+        );
+      const awaitIdle = (requestId: string) =>
+        pipe(
+          related(requestId),
+          Stream.filterEffect(idle),
+          Stream.runHead,
+          Effect.asVoid,
+        );
+      const probe = Effect.gen(function* () {
+        const request = yield* send(shell, "kernel_info_request", {});
+        const response = yield* reply(
+          shell,
+          request.header.msg_id,
+          "kernel_info_reply",
+        ).pipe(Effect.timeout("5 seconds"));
+        yield* Schema.decodeUnknownEffect(Ok)(response.content).pipe(
+          mapFailed("validate kernel_info_reply"),
+        );
+        return Option.isSome(
+          yield* awaitIdle(request.header.msg_id).pipe(
+            Effect.timeoutOption(250),
+          ),
+        );
+      });
+      yield* shellLock.withPermit(
+        pipe(
+          probe,
+          mapFailed("health-check Deno kernel"),
           Effect.repeat({
             until: (ready) => ready,
-            times: IOPUB_PROBE_ATTEMPTS - 1,
+            times: 39,
             schedule: Schedule.spaced(50),
           }),
           Effect.filterOrFail(
             (ready) => ready,
-            () =>
-              new OperationFailed({
-                operation: "health-check Deno Jupyter kernel",
-                message: "The Jupyter IOPub channel did not become ready",
-              }),
+            () => failed("health-check Deno kernel", "IOPub not ready"),
           ),
           Effect.asVoid,
-        );
-        yield* shellRequests.withPermit(healthCheck).pipe(withDiagnostics);
+        ),
+      );
 
-        const ensureOpen = Effect.fn("Jupyter.Kernel.__ensureOpen")(
-          function* () {
-            if (!(yield* Ref.get(closed))) return;
-            return yield* new OperationFailed({
-              operation: "use Deno Jupyter kernel",
-              message: "The kernel process is closed",
-            });
-          },
-        );
-
-        const publishIopub = Effect.fn("Jupyter.Kernel.__publishIopub")(
-          function* (
-            requestId: string,
-            outputQueue: Queue.Enqueue<Output, OperationFailed | Cause.Done>,
-          ) {
-            return yield* pipe(
-              messageStream(iopub),
-              Stream.filter((message) =>
-                hasParentMessageId(message, requestId),
-              ),
-              Stream.takeUntilEffect(isIdleMessage),
-              Stream.mapEffect(decodeIopubOutput),
-              Stream.filter(Option.isSome),
-              Stream.map((output) => output.value),
-              Stream.runForEach((output) => Queue.offer(outputQueue, output)),
-            );
-          },
-        );
-
-        const start: Handle["start"] = Effect.fn("Jupyter.Kernel.start")(
-          function* (code) {
-            const outputQueue = yield* Queue.unbounded<
-              Output,
-              OperationFailed | Cause.Done
-            >();
-            const started = yield* Deferred.make<string, OperationFailed>();
-            const completion = yield* Deferred.make<
-              ExecutionResult,
-              OperationFailed
-            >();
-
-            const coordinator = shellRequests.withPermit(
-              Effect.gen(function* () {
-                yield* ensureOpen();
-                const content = yield* Schema.decodeUnknownEffect(
-                  ExecuteRequestContent,
-                )({
-                  code,
-                  silent: false,
-                  store_history: true,
-                  user_expressions: {},
-                  allow_stdin: false,
-                  stop_on_error: false,
-                }).pipe(mapOperation("validate Jupyter execute_request"));
-                const request = yield* sendRequest(
-                  shell,
-                  "execute_request",
-                  content,
-                );
-                yield* Deferred.succeed(started, request.header.msg_id);
-
-                const { replyMessage } = yield* Effect.all(
-                  {
-                    replyMessage: receiveReply(
-                      shell,
-                      request.header.msg_id,
-                      "execute_reply",
-                    ),
-                    outputs: publishIopub(request.header.msg_id, outputQueue),
-                  },
-                  { concurrency: "unbounded" },
-                );
-                const reply = yield* Schema.decodeUnknownEffect(
-                  ExecuteReplyContent,
-                )(replyMessage.content).pipe(
-                  mapOperation("validate Jupyter execute_reply"),
-                );
-                return new ExecutionResult({
-                  status: reply.status === "ok" ? "succeeded" : "failed",
-                  reply,
-                });
-              }),
-            );
-
-            const finalized = pipe(
-              coordinator,
-              Effect.onExit((exit) =>
-                Exit.match(exit, {
-                  onFailure: (cause) => {
-                    const failure = operationFailureFromCause(cause);
-                    return pipe(
-                      Effect.all(
-                        {
-                          outputs: Queue.fail(outputQueue, failure),
-                          started: Deferred.fail(started, failure),
-                        },
-                        { discard: true },
-                      ),
-                      Effect.asVoid,
-                    );
-                  },
-                  onSuccess: () => Queue.end(outputQueue).pipe(Effect.asVoid),
-                }),
-              ),
-            );
-            yield* pipe(
-              finalized,
-              Deferred.into(completion),
-              Effect.forkIn(scope),
-            );
-
-            const requestId = yield* Deferred.await(started);
-            return new Execution({
-              requestId,
-              outputs: Stream.fromQueue(outputQueue),
-              completion: Deferred.await(completion),
-            });
-          },
-        );
-
-        const interrupt: Handle["interrupt"] = controlRequests.withPermit(
-          Effect.gen(function* () {
-            if (yield* Ref.get(closed)) return;
-            const content = yield* Schema.decodeUnknownEffect(
-              InterruptRequestContent,
-            )({}).pipe(mapOperation("validate Jupyter interrupt_request"));
-            const reply = yield* requestReply(
-              control,
-              "interrupt_request",
-              "interrupt_reply",
-              content,
-            ).pipe(
-              Effect.timeoutOrElse({
-                duration: "5 seconds",
-                orElse: () =>
-                  Effect.fail(
-                    new OperationFailed({
-                      operation: "interrupt Deno Jupyter kernel",
-                      message: "The kernel did not answer within 5 seconds",
-                    }),
+      const start: Handle["start"] = Effect.fn("Jupyter.Kernel.start")(
+        function* (code) {
+          const output = yield* Queue.unbounded<
+            Output,
+            OperationFailed | Cause.Done
+          >();
+          const started = yield* Deferred.make<void, OperationFailed>();
+          const coordinator = shellLock.withPermit(
+            Effect.gen(function* () {
+              if (yield* Ref.get(closed))
+                return yield* failed("execute Deno cell", "Kernel is closed");
+              const request = yield* send(shell, "execute_request", {
+                code,
+                silent: false,
+                store_history: true,
+                user_expressions: {},
+                allow_stdin: false,
+                stop_on_error: false,
+              });
+              yield* Deferred.succeed(started, undefined);
+              const { response } = yield* Effect.all(
+                {
+                  response: reply(
+                    shell,
+                    request.header.msg_id,
+                    "execute_reply",
                   ),
+                  output: publish(request.header.msg_id, output),
+                },
+                { concurrency: "unbounded" },
+              );
+              const value = yield* Schema.decodeUnknownEffect(Reply)(
+                response.content,
+              ).pipe(mapFailed("validate execute_reply"));
+              return new ExecutionResult({
+                status: value.status === "ok" ? "succeeded" : "failed",
+                reply: value,
+              });
+            }),
+          );
+          const finalized = coordinator.pipe(
+            Effect.onExit((exit) =>
+              Exit.match(exit, {
+                onFailure: (cause) => {
+                  const error = pipe(
+                    Cause.findErrorOption(cause),
+                    Option.getOrElse(() =>
+                      failed("run Jupyter execution", Cause.pretty(cause)),
+                    ),
+                  );
+                  return Effect.all(
+                    [Queue.fail(output, error), Deferred.fail(started, error)],
+                    { discard: true },
+                  );
+                },
+                onSuccess: () => Queue.end(output).pipe(Effect.asVoid),
               }),
-            );
-            yield* Schema.decodeUnknownEffect(InterruptReplyContent)(
-              reply.content,
-            ).pipe(mapOperation("validate Jupyter interrupt_reply"));
-          }),
-        );
-
-        const shutdown: Handle["shutdown"] = controlRequests.withPermit(
-          Effect.gen(function* () {
-            const wasClosed = yield* Ref.getAndSet(closed, true);
-            if (wasClosed) return;
-
-            const graceful = pipe(
-              Effect.gen(function* () {
-                const content = yield* Schema.decodeUnknownEffect(
-                  ShutdownRequestContent,
-                )({ restart: false }).pipe(
-                  mapOperation("validate Jupyter shutdown_request"),
-                );
-                const reply = yield* requestReply(
-                  control,
-                  "shutdown_request",
-                  "shutdown_reply",
-                  content,
-                );
-                yield* Schema.decodeUnknownEffect(ShutdownReplyContent)(
-                  reply.content,
-                ).pipe(mapOperation("validate Jupyter shutdown_reply"));
-              }),
-              Effect.timeoutOption("2 seconds"),
-              Effect.ignore,
-            );
-            yield* graceful;
-
-            const exited = yield* pipe(
-              processHandle.exitCode,
-              Effect.as(true),
-              Effect.orElseSucceed(() => false),
-              Effect.timeoutOrElse({
-                duration: "2 seconds",
-                orElse: () => Effect.succeed(false),
-              }),
-            );
-            if (exited) return;
-            yield* processHandle
+            ),
+          );
+          const fiber = yield* finalized.pipe(Effect.forkIn(scope));
+          yield* Deferred.await(started);
+          return new Execution({
+            outputs: Stream.fromQueue(output),
+            completion: Fiber.join(fiber),
+          });
+        },
+      );
+      const interrupt: Handle["interrupt"] = controlLock.withPermit(
+        pipe(
+          requestReply(control, "interrupt_request", "interrupt_reply", {}),
+          Effect.timeout("5 seconds"),
+          Effect.flatMap((response) =>
+            Schema.decodeUnknownEffect(Ok)(response.content),
+          ),
+          mapFailed("interrupt Deno kernel"),
+          Effect.asVoid,
+        ),
+      );
+      const shutdown: Handle["shutdown"] = controlLock.withPermit(
+        Effect.gen(function* () {
+          if (yield* Ref.getAndSet(closed, true)) return;
+          yield* pipe(
+            requestReply(control, "shutdown_request", "shutdown_reply", {
+              restart: false,
+            }),
+            Effect.flatMap((response) =>
+              Schema.decodeUnknownEffect(Ok)(response.content),
+            ),
+            Effect.timeoutOption("2 seconds"),
+            Effect.ignore,
+          );
+          const exited = yield* pipe(
+            process.exitCode,
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+            Effect.timeoutOrElse({
+              duration: "2 seconds",
+              orElse: () => Effect.succeed(false),
+            }),
+          );
+          if (!exited)
+            yield* process
               .kill({ killSignal: "SIGTERM", forceKillAfter: "1 second" })
-              .pipe(mapOperation("stop Deno Jupyter kernel"));
-          }),
-        );
-
-        return new Handle({ start, interrupt, shutdown });
-      },
-    );
-
+              .pipe(mapFailed("stop Deno Jupyter kernel"));
+        }),
+      );
+      return new Handle({ start, interrupt, shutdown });
+    });
     return Service.of({ open });
   }),
 );
-
-export * as Kernel from "./kernel.ts";
