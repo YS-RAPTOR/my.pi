@@ -13,8 +13,9 @@ import {
   pipe,
   Schema,
 } from "effect";
-import * as Jupyter from "#o/jupyter";
-import * as Notebook from "#o/notebook";
+import { Jupyter } from "#o/jupyter";
+import { Notebook } from "#o/notebook";
+import { CellOutput } from "#o/output";
 
 const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-spike-"));
 
@@ -202,22 +203,27 @@ notebookValue + 2;
     "utf8",
   );
   const sourceIndex = journal.indexOf('"cell_started"');
-  const outputIndex = journal.indexOf('"cell_output"');
   const terminalIndex = journal.indexOf('"cell_completed"');
+  const cellDirectory = join(first.artifactPath, "cells", firstCell);
+  const outputs = readFileSync(join(cellDirectory, "outputs.jsonl"), "utf8");
+  const streams = readFileSync(join(cellDirectory, "streams.log"), "utf8");
   yield* assert(sourceIndex >= 0, "The journal did not contain cell source");
   yield* assert(
-    outputIndex > sourceIndex,
-    "Output was journaled before source",
+    terminalIndex > sourceIndex,
+    "Terminal status was journaled before source",
   );
   yield* assert(
-    terminalIndex > outputIndex,
-    "Terminal status was journaled before output",
+    !journal.includes('"cell_output"'),
+    "Cell output remained in the notebook journal",
   );
+  yield* assert(
+    outputs.split("\n").every((line) => line === "" || JSON.parse(line)),
+    "The output log was not strict JSONL",
+  );
+  yield* assert(streams.includes("cell-started"), "The stream log was empty");
 
   yield* Console.log("notebook runtime: create/start/wait/stop/list passed");
-  yield* Console.log(
-    "notebook journal: source/output/terminal ordering passed",
-  );
+  yield* Console.log("cell output: strict logs and journal separation passed");
 });
 
 const runtimeConfig = new Notebook.Config({
@@ -229,6 +235,7 @@ const runtimeConfig = new Notebook.Config({
 const mainLayer = pipe(
   Notebook.layer(runtimeConfig),
   Layer.provide(Jupyter.layer),
+  Layer.provide(CellOutput.layer),
   Layer.provide(NodeServices.layer),
 );
 

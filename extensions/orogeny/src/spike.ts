@@ -14,7 +14,7 @@ import {
   Schema,
   Stream,
 } from "effect";
-import * as Jupyter from "#o/jupyter";
+import { Jupyter } from "#o/jupyter";
 
 class PlainTextBundle extends Schema.Opaque<PlainTextBundle>()(
   Schema.Struct({ "text/plain": Schema.String }),
@@ -105,8 +105,9 @@ await new Promise((resolve) => setTimeout(resolve, 750));
     ),
     Effect.forkChild,
   );
-  const completion = yield* incremental.completion.pipe(Effect.forkChild);
-  const observed = yield* Deferred.await(firstOutput).pipe(
+  const completion = yield* pipe(incremental.completion, Effect.forkChild);
+  const observed = yield* pipe(
+    Deferred.await(firstOutput),
     Effect.timeoutOrElse({
       duration: "5 seconds",
       orElse: () =>
@@ -117,7 +118,8 @@ await new Promise((resolve) => setTimeout(resolve, 750));
         ),
     }),
   );
-  const completionState = yield* Fiber.join(completion).pipe(
+  const completionState = yield* pipe(
+    Fiber.join(completion),
     Effect.timeoutOption(0),
   );
   yield* assert(
@@ -158,12 +160,14 @@ await new Promise((resolve) => setTimeout(resolve, 750));
   );
   yield* Console.log(`persistent state: ${persistedValue}`);
 
-  const running = yield* capture(yield* kernel.start("while (true) {}")).pipe(
+  const running = yield* pipe(
+    capture(yield* kernel.start("while (true) {}")),
     Effect.forkChild,
   );
   yield* Effect.sleep(250);
   yield* kernel.interrupt;
-  const interrupted = yield* Fiber.join(running).pipe(
+  const interrupted = yield* pipe(
+    Fiber.join(running),
     Effect.timeoutOrElse({
       duration: "5 seconds",
       orElse: () =>
@@ -197,6 +201,6 @@ await new Promise((resolve) => setTimeout(resolve, 750));
   yield* Console.log("orogeny incremental kernel spike: passed");
 });
 
-const mainLayer = Jupyter.layer.pipe(Layer.provide(NodeServices.layer));
+const mainLayer = pipe(Jupyter.layer, Layer.provide(NodeServices.layer));
 
 pipe(program, Effect.scoped, Effect.provide(mainLayer), NodeRuntime.runMain);
