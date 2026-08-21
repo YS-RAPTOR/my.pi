@@ -20,9 +20,8 @@ export type Global = Readonly<{
   sendUserMessage: (
     ...args: Parameters<ExtensionAPI["sendUserMessage"]>
   ) => SyncResult<ExtensionAPI["sendUserMessage"]>;
-  exec: (
-    ...args: Parameters<ExtensionAPI["exec"]>
-  ) => AsyncResult<ExtensionAPI["exec"]>;
+  exec: (...args: Parameters<ExtensionAPI["exec"]>) => AsyncResult<ExtensionAPI["exec"]>;
+  getFlag: (...args: Parameters<ExtensionAPI["getFlag"]>) => SyncResult<ExtensionAPI["getFlag"]>;
   getActiveTools: SyncResult<ExtensionAPI["getActiveTools"]>;
   getAllTools: SyncResult<ExtensionAPI["getAllTools"]>;
   setActiveTools: (
@@ -51,9 +50,7 @@ export type Callback = Readonly<{
 }>;
 
 export type Command = Readonly<{
-  getSystemPromptOptions: SyncResult<
-    ExtensionCommandContext["getSystemPromptOptions"]
-  >;
+  getSystemPromptOptions: SyncResult<ExtensionCommandContext["getSystemPromptOptions"]>;
   waitForIdle: AsyncResult<ExtensionCommandContext["waitForIdle"]>;
 }>;
 
@@ -64,25 +61,25 @@ const asyncAction = <Arguments extends unknown[], Value>(
   Effect.fn(name)((...args) => Effect.tryPromise(() => action(...args)));
 
 export const global = (pi: ExtensionAPI): Global => {
-  const sendMessage: Global["sendMessage"] = Effect.fn(
-    "Pi.Host.AgentState.sendMessage",
-  )((...args) => Effect.sync(() => pi.sendMessage(...args)));
+  const sendMessage: Global["sendMessage"] = Effect.fn("Pi.Host.AgentState.sendMessage")(
+    (...args) => Effect.sync(() => pi.sendMessage(...args)),
+  );
 
   const sendUserMessage: Global["sendUserMessage"] = Effect.fn(
     "Pi.Host.AgentState.sendUserMessage",
   )((...args) => Effect.sync(() => pi.sendUserMessage(...args)));
 
-  const exec: Global["exec"] = Effect.fn("Pi.Host.AgentState.exec")(
-    (command, args, options) =>
-      Effect.tryPromise((signal) =>
-        pi.exec(command, args, {
-          ...options,
-          signal:
-            options?.signal === undefined
-              ? signal
-              : AbortSignal.any([signal, options.signal]),
-        }),
-      ),
+  const exec: Global["exec"] = Effect.fn("Pi.Host.AgentState.exec")((command, args, options) =>
+    Effect.tryPromise((signal) =>
+      pi.exec(command, args, {
+        ...options,
+        signal: options?.signal === undefined ? signal : AbortSignal.any([signal, options.signal]),
+      }),
+    ),
+  );
+
+  const getFlag: Global["getFlag"] = Effect.fn("Pi.Host.AgentState.getFlag")((...args) =>
+    Effect.sync(() => pi.getFlag(...args)),
   );
 
   const getActiveTools: Global["getActiveTools"] = pipe(
@@ -95,9 +92,9 @@ export const global = (pi: ExtensionAPI): Global => {
     Effect.withSpan("Pi.Host.AgentState.getAllTools"),
   );
 
-  const setActiveTools: Global["setActiveTools"] = Effect.fn(
-    "Pi.Host.AgentState.setActiveTools",
-  )((...args) => Effect.sync(() => pi.setActiveTools(...args)));
+  const setActiveTools: Global["setActiveTools"] = Effect.fn("Pi.Host.AgentState.setActiveTools")(
+    (...args) => Effect.sync(() => pi.setActiveTools(...args)),
+  );
 
   const setModel: Global["setModel"] = asyncAction(
     "Pi.Host.AgentState.setModel",
@@ -117,6 +114,7 @@ export const global = (pi: ExtensionAPI): Global => {
     sendMessage,
     sendUserMessage,
     exec,
+    getFlag,
     getActiveTools,
     getAllTools,
     setActiveTools,

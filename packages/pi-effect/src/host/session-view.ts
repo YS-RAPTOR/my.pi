@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
   ProjectTrustContext,
 } from "@earendil-works/pi-coding-agent";
-import { Cause, Effect, pipe } from "effect";
+import { Cause, Effect, Option, pipe } from "effect";
 
 type AsyncResult<Method> = Method extends (...args: never[]) => infer Result
   ? Effect.Effect<Awaited<Result>, Cause.UnknownError>
@@ -25,6 +25,7 @@ export type Global = Readonly<{
 export type Callback = Readonly<{
   cwd: Effect.Effect<ExtensionContext["cwd"]>;
   mode: Effect.Effect<ExtensionContext["mode"]>;
+  file: Effect.Effect<Option.Option<string>>;
   sessionManager: Effect.Effect<ExtensionContext["sessionManager"]>;
   isProjectTrusted: SyncResult<ExtensionContext["isProjectTrusted"]>;
   getContextUsage: SyncResult<ExtensionContext["getContextUsage"]>;
@@ -61,24 +62,24 @@ const asyncAction = <Arguments extends unknown[], Value>(
   Effect.fn(name)((...args) => Effect.tryPromise(() => action(...args)));
 
 export const global = (pi: ExtensionAPI): Global => {
-  const appendEntry: Global["appendEntry"] = Effect.fn(
-    "Pi.Host.SessionView.appendEntry",
-  )(function* <Data>(customType: string, data?: Data) {
-    yield* Effect.sync(() => pi.appendEntry(customType, data));
-  });
+  const appendEntry: Global["appendEntry"] = Effect.fn("Pi.Host.SessionView.appendEntry")(
+    function* <Data>(customType: string, data?: Data) {
+      yield* Effect.sync(() => pi.appendEntry(customType, data));
+    },
+  );
 
-  const setSessionName: Global["setSessionName"] = Effect.fn(
-    "Pi.Host.SessionView.setSessionName",
-  )((name) => Effect.sync(() => pi.setSessionName(name)));
+  const setSessionName: Global["setSessionName"] = Effect.fn("Pi.Host.SessionView.setSessionName")(
+    (name) => Effect.sync(() => pi.setSessionName(name)),
+  );
 
   const getSessionName: Global["getSessionName"] = pipe(
     Effect.sync(() => pi.getSessionName()),
     Effect.withSpan("Pi.Host.SessionView.getSessionName"),
   );
 
-  const setLabel: Global["setLabel"] = Effect.fn(
-    "Pi.Host.SessionView.setLabel",
-  )((entryId, label) => Effect.sync(() => pi.setLabel(entryId, label)));
+  const setLabel: Global["setLabel"] = Effect.fn("Pi.Host.SessionView.setLabel")((entryId, label) =>
+    Effect.sync(() => pi.setLabel(entryId, label)),
+  );
 
   const getCommands: Global["getCommands"] = pipe(
     Effect.sync(() => pi.getCommands()),
@@ -103,6 +104,11 @@ export const callback = (context: ExtensionContext): Callback => ({
     Effect.sync(() => context.mode),
     Effect.withSpan("Pi.Host.SessionView.mode"),
   ),
+  file: pipe(
+    Effect.sync(() => context.sessionManager.getSessionFile()),
+    Effect.map(Option.fromUndefinedOr),
+    Effect.withSpan("Pi.Host.SessionView.file"),
+  ),
   sessionManager: pipe(
     Effect.sync(() => context.sessionManager),
     Effect.withSpan("Pi.Host.SessionView.sessionManager"),
@@ -121,15 +127,9 @@ export const callback = (context: ExtensionContext): Callback => ({
 });
 
 export const command = (context: ExtensionCommandContext): Command => ({
-  newSession: asyncAction(
-    "Pi.Host.SessionView.newSession",
-    context.newSession.bind(context),
-  ),
+  newSession: asyncAction("Pi.Host.SessionView.newSession", context.newSession.bind(context)),
   fork: asyncAction("Pi.Host.SessionView.fork", context.fork.bind(context)),
-  navigateTree: asyncAction(
-    "Pi.Host.SessionView.navigateTree",
-    context.navigateTree.bind(context),
-  ),
+  navigateTree: asyncAction("Pi.Host.SessionView.navigateTree", context.navigateTree.bind(context)),
   switchSession: asyncAction(
     "Pi.Host.SessionView.switchSession",
     context.switchSession.bind(context),

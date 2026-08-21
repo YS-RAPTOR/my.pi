@@ -132,7 +132,7 @@ class CellCompletedRecord extends Schema.Class<CellCompletedRecord>("CellComplet
   message: Schema.NullOr(Schema.String),
 }) {}
 
-const NotebookJournal = Schema.TupleWithRest(
+export const NotebookJournal = Schema.TupleWithRest(
   Schema.Tuple([Schema.fromJsonString(NotebookCreatedRecord)]),
   [Schema.fromJsonString(Schema.Union([CellStartedRecord, CellCompletedRecord]))],
 );
