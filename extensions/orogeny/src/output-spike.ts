@@ -6,7 +6,8 @@ import { Chunk, Console, Data, Effect, Layer, Option, pipe, Schema } from "effec
 import { Jupyter } from "#o/jupyter";
 import { CellOutput } from "#o/output";
 
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
 const root = mkdtempSync(join(tmpdir(), "orogeny-output-spike-"));
 const directory = join(root, "cell");
@@ -32,7 +33,10 @@ const drain = Effect.fnUntraced(function* (
   handle: CellOutput.Handle,
   cursor = CellOutput.Cursor.start(),
   pages: Chunk.Chunk<CellOutput.ReadResult> = Chunk.empty(),
-): Effect.fn.Return<Chunk.Chunk<CellOutput.ReadResult>, CellOutput.OperationFailed | AssertionFailed> {
+): Effect.fn.Return<
+  Chunk.Chunk<CellOutput.ReadResult>,
+  CellOutput.OperationFailed | AssertionFailed
+> {
   const page = yield* handle.read(
     new CellOutput.ReadInput({
       cursor,
@@ -43,7 +47,10 @@ const drain = Effect.fnUntraced(function* (
   );
   const next = Chunk.append(pages, page);
   if (!page.hasMore) return next;
-  yield* assert(page.cursor.toString() !== cursor.toString(), `Pagination did not advance from ${cursor}`);
+  yield* assert(
+    page.cursor.toString() !== cursor.toString(),
+    `Pagination did not advance from ${cursor}`,
+  );
   return yield* drain(handle, page.cursor, next);
 });
 
@@ -80,7 +87,10 @@ const program = Effect.gen(function* () {
   const outputLog = readFileSync(join(directory, "outputs.jsonl"), "utf8");
   const outputLines = outputLog.slice(0, -1).split("\n");
   yield* assert(outputLog.endsWith("\n"), "Output log was not LF-terminated");
-  yield* assert(outputLines.length === 8, `Expected 8 output records, received ${outputLines.length}`);
+  yield* assert(
+    outputLines.length === 8,
+    `Expected 8 output records, received ${outputLines.length}`,
+  );
   yield* Effect.forEach(
     outputLines,
     (line) =>
@@ -94,10 +104,19 @@ const program = Effect.gen(function* () {
   const artifacts = readdirSync(directory, { withFileTypes: true }).filter(
     (entry) => entry.isDirectory() && entry.name.startsWith("artifact_"),
   );
-  yield* assert(artifacts.length === 2, `Expected 2 artifact bundles, received ${artifacts.length}`);
+  yield* assert(
+    artifacts.length === 2,
+    `Expected 2 artifact bundles, received ${artifacts.length}`,
+  );
 
-  const stream = readFileSync(join(directory, "streams.log"), "utf8").replace(/\[[^\]]+ stdout\] /g, "[stdout] ");
-  yield* assert(stream === "[stdout] loading...done\n", `Unexpected stream normalization: ${JSON.stringify(stream)}`);
+  const stream = readFileSync(join(directory, "streams.log"), "utf8").replace(
+    /\[[^\]]+ stdout\] /g,
+    "[stdout] ",
+  );
+  yield* assert(
+    stream === "[stdout] loading...done\n",
+    `Unexpected stream normalization: ${JSON.stringify(stream)}`,
+  );
 
   const pages = yield* drain(handle);
   const content = pipe(
@@ -164,7 +183,10 @@ const program = Effect.gen(function* () {
     Chunk.join(""),
   );
   yield* assert(partialText.endsWith("loading..."), "Partial stream text was not delivered");
-  yield* assert(partial.cursor.position.byte !== undefined, "Partial stream did not produce a byte cursor");
+  yield* assert(
+    partial.cursor.position.byte !== undefined,
+    "Partial stream did not produce a byte cursor",
+  );
 
   yield* examples.append(Jupyter.Output.stream({ name: "stdout", text: "done\n" }));
   yield* examples.append(display({ "text/plain": "text before image\n" }));
@@ -188,9 +210,15 @@ const program = Effect.gen(function* () {
     ),
     Chunk.toReadonlyArray,
   );
-  yield* assert(joined.boundary === "image", "Joined text and image did not end at the image boundary");
   yield* assert(
-    Chunk.some(joined.content, (value) => CellOutput.Content.$is("text")(value) && value.text === "done\n"),
+    joined.boundary === "image",
+    "Joined text and image did not end at the image boundary",
+  );
+  yield* assert(
+    Chunk.some(
+      joined.content,
+      (value) => CellOutput.Content.$is("text")(value) && value.text === "done\n",
+    ),
     "Stream continuation was not delivered",
   );
   yield* assert(
@@ -201,7 +229,10 @@ const program = Effect.gen(function* () {
     "Text was not joined with the image page",
   );
   yield* assert(
-    Chunk.some(joined.content, (value) => CellOutput.Content.$is("image")(value) && value.mimeType === "image/png"),
+    Chunk.some(
+      joined.content,
+      (value) => CellOutput.Content.$is("image")(value) && value.mimeType === "image/png",
+    ),
     "Image was not joined with the text page",
   );
 
@@ -220,7 +251,10 @@ const program = Effect.gen(function* () {
     Chunk.join(""),
   );
   yield* assert(longText === "abcd", "Long line was not split at the byte limit");
-  yield* assert(long.cursor.toString() === "oc1:o3:l0:b4", "Long line did not produce the expected byte cursor");
+  yield* assert(
+    long.cursor.toString() === "oc1:o3:l0:b4",
+    "Long line did not produce the expected byte cursor",
+  );
 
   const resumed = yield* examples.read(
     new CellOutput.ReadInput({

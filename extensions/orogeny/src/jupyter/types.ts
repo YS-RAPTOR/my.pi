@@ -2,13 +2,9 @@ import { Schema } from "effect";
 
 export const HOST = "127.0.0.1";
 
-const Port = Schema.Int.check(
-  Schema.isBetween({ minimum: 1, maximum: 65_535 }),
-);
+const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 }));
 
-export class ConnectionInfo extends Schema.Class<ConnectionInfo>(
-  "ConnectionInfo",
-)({
+export class ConnectionInfo extends Schema.Class<ConnectionInfo>("ConnectionInfo")({
   ip: Schema.Literal(HOST),
   transport: Schema.Literal("tcp"),
   shell_port: Port,
@@ -63,14 +59,12 @@ export class StreamOutput extends Schema.Class<StreamOutput>("StreamOutput")({
   text: Schema.String,
 }) {}
 
-export class DisplayOutput extends Schema.Class<DisplayOutput>("DisplayOutput")(
-  {
-    data: MimeBundle,
-    metadata: Schema.Json,
-    transient: Schema.optionalKey(Schema.Json),
-    execution_count: Schema.optionalKey(Schema.Int),
-  },
-) {}
+export class DisplayOutput extends Schema.Class<DisplayOutput>("DisplayOutput")({
+  data: MimeBundle,
+  metadata: Schema.Json,
+  transient: Schema.optionalKey(Schema.Json),
+  execution_count: Schema.optionalKey(Schema.Int),
+}) {}
 
 export class ErrorOutput extends Schema.Class<ErrorOutput>("ErrorOutput")({
   ename: Schema.String,
@@ -82,8 +76,8 @@ export class Clear extends Schema.Class<Clear>("Clear")({
   wait: Schema.Boolean,
 }) {}
 
-export class Status extends Schema.Class<Status>("Status")({
-  execution_state: Schema.Literals(["busy", "idle", "starting"]),
+export class Sentinel extends Schema.Class<Sentinel>("Sentinel")({
+  token: Schema.String,
 }) {}
 
 export class Reply extends Schema.Class<Reply>("Reply")({

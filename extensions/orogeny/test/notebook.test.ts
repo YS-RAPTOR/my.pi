@@ -6,12 +6,24 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { NodeServices } from "@effect/platform-node";
 import * as Pi from "@earendil-works/pi-coding-agent";
-import { Chunk, Clock, Deferred, Effect, Fiber, Layer, Option, pipe, Stream, String as Str } from "effect";
+import {
+  Chunk,
+  Clock,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  pipe,
+  Stream,
+  String as Str,
+} from "effect";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
 const fixture = async <A, E>(body: (notebooks: Notebook.Interface) => Effect.Effect<A, E>) => {
   const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-test-"));
@@ -87,126 +99,129 @@ const awaitTerminal = Effect.fnUntraced(function* (
   return yield* awaitTerminal(notebooks, cellId, Option.some(result.nextCursor));
 });
 
-test("wait returns immediately when captured output exactly fills the delivery page", { timeout: 20_000 }, () =>
-  fixture((notebooks) =>
-    Effect.gen(function* () {
-      assert.equal(Pi.DEFAULT_MAX_LINES, 2_000);
+test(
+  "wait returns immediately when captured output exactly fills the delivery page",
+  { timeout: 20_000 },
+  () =>
+    fixture((notebooks) =>
+      Effect.gen(function* () {
+        assert.equal(Pi.DEFAULT_MAX_LINES, 2_000);
 
-      const notebook = yield* notebooks.create();
-      const cell = yield* notebooks.start(
-        new Notebook.StartInput({
-          notebookId: Option.some(notebook.id),
-          code: `
+        const notebook = yield* notebooks.create();
+        const cell = yield* notebooks.start(
+          new Notebook.StartInput({
+            notebookId: Option.some(notebook.id),
+            code: `
 const lines = Array.from({ length: 2000 }, () => "x").join("\\n");
 await Deno.jupyter.display({ "text/plain": lines }, { raw: true });
 await new Promise((resolve) => setTimeout(resolve, 3000));
 `,
-        }),
-      );
+          }),
+        );
 
-      const observedEvents = yield* collectWait(notebooks, cell, Option.none(), 5_000);
-      const observedCompletion = completion(observedEvents);
-      assert.equal(observedCompletion.status, "running");
-      assert.equal(observedCompletion.hasMore, false);
-      assert.equal(text(observedEvents).split("\n").length, 2_000);
+        const observedEvents = yield* collectWait(notebooks, cell, Option.none(), 5_000);
+        const observedCompletion = completion(observedEvents);
+        assert.equal(observedCompletion.status, "running");
+        assert.equal(observedCompletion.hasMore, false);
+        assert.equal(text(observedEvents).split("\n").length, 2_000);
 
-      const immediateEvents = yield* pipe(
-        collectWait(notebooks, cell, Option.none(), 5_000),
-        Effect.timeout("1 second"),
-      );
-      const immediateCompletion = completion(immediateEvents);
-      assert.equal(immediateCompletion.status, "running");
-      assert.equal(immediateCompletion.hasMore, false);
-      assert.equal(immediateCompletion.nextCursor.toString(), "oc1:o1:l0");
-      assert.equal(text(immediateEvents), text(observedEvents));
+        const immediateEvents = yield* pipe(
+          collectWait(notebooks, cell, Option.none(), 5_000),
+          Effect.timeout("1 second"),
+        );
+        const immediateCompletion = completion(immediateEvents);
+        assert.equal(immediateCompletion.status, "running");
+        assert.equal(immediateCompletion.hasMore, false);
+        assert.equal(immediateCompletion.nextCursor.toString(), "oc1:o1:l0");
+        assert.equal(text(immediateEvents), text(observedEvents));
 
-      const terminalEvents = yield* collectWait(notebooks, cell, Option.some(immediateCompletion.nextCursor), 5_000);
-      const terminalCompletion = completion(terminalEvents);
-      assert.equal(terminalCompletion.status, "succeeded");
-      assert.equal(terminalCompletion.hasMore, false);
-      assert.equal(Chunk.some(terminalEvents, Notebook.WaitEvent.$is("content")), false);
-    }),
-  ),
+        const terminalEvents = yield* collectWait(
+          notebooks,
+          cell,
+          Option.some(immediateCompletion.nextCursor),
+          5_000,
+        );
+        const terminalCompletion = completion(terminalEvents);
+        assert.equal(terminalCompletion.status, "succeeded");
+        assert.equal(terminalCompletion.hasMore, false);
+        assert.equal(Chunk.some(terminalEvents, Notebook.WaitEvent.$is("content")), false);
+      }),
+    ),
 );
 
-test("wait paginates logical lines and joins the remaining text with an image", { timeout: 20_000 }, () =>
-  fixture((notebooks) =>
-    Effect.gen(function* () {
-      const notebook = yield* notebooks.create();
-      const cell = yield* notebooks.start(
-        new Notebook.StartInput({
-          notebookId: Option.some(notebook.id),
-          code: `
+test(
+  "wait paginates rapid text and image output without losing the tail",
+  { timeout: 20_000 },
+  () =>
+    fixture((notebooks) =>
+      Effect.gen(function* () {
+        const notebook = yield* notebooks.create();
+        const cell = yield* notebooks.start(
+          new Notebook.StartInput({
+            notebookId: Option.some(notebook.id),
+            code: `
 const pagedLines = Array.from({ length: 2001 }, () => "x").join("\\n");
 await Deno.jupyter.display({ "text/plain": pagedLines }, { raw: true });
-await Deno.jupyter.display({ "image/png": "${TINY_PNG}", "text/plain": "one pixel" }, { raw: true });
-`,
-        }),
-      );
-      yield* awaitTerminal(notebooks, cell);
-
-      const linesPage = yield* collectWait(notebooks, cell, Option.none(), 5_000);
-      const linesComplete = completion(linesPage);
-      assert.equal(linesComplete.status, "succeeded");
-      assert.equal(linesComplete.nextCursor.toString(), "oc1:o0:l2000");
-      assert.equal(linesComplete.hasMore, true);
-      assert.equal(pipe(text(linesPage), Str.linesWithSeparators, Chunk.fromIterable, Chunk.size), 2_000);
-      assert.equal(Chunk.some(content(linesPage), CellOutput.Content.$is("image")), false);
-
-      const imagePage = yield* collectWait(notebooks, cell, Option.some(linesComplete.nextCursor), 5_000);
-      const imageComplete = completion(imagePage);
-      const imageContent = content(imagePage);
-      assert.equal(imageComplete.status, "succeeded");
-      assert.equal(imageComplete.nextCursor.toString(), "oc1:o2:l0");
-      assert.equal(imageComplete.hasMore, false);
-      assert.equal(Chunk.size(imageContent), 3);
-
-      const remainingLine = Chunk.getUnsafe(imageContent, 0);
-      const annotation = Chunk.getUnsafe(imageContent, 1);
-      const image = Chunk.getUnsafe(imageContent, 2);
-      assert.ok(CellOutput.Content.$is("text")(remainingLine));
-      assert.equal(remainingLine.text, "x");
-      assert.ok(CellOutput.Content.$is("text")(annotation));
-      assert.match(annotation.text, /^\[Image\]\(<.*artifact_/);
-      assert.match(annotation.text, /\{image\/png,text\/plain\}\n$/);
-      assert.ok(CellOutput.Content.$is("image")(image));
-      assert.equal(image.mimeType, "image/png");
-      assert.notEqual(image.data.length, 0);
-
-      const boundaryCell = yield* notebooks.start(
-        new Notebook.StartInput({
-          notebookId: Option.some(notebook.id),
-          code: `
+await Deno.jupyter.display({ "text/plain": "text before image\\n" }, { raw: true });
 await Deno.jupyter.display({ "image/png": "${TINY_PNG}", "text/plain": "one pixel" }, { raw: true });
 await Deno.jupyter.display({ "text/plain": "text after image\\n" }, { raw: true });
 `,
-        }),
-      );
-      yield* awaitTerminal(notebooks, boundaryCell);
+          }),
+        );
+        yield* awaitTerminal(notebooks, cell);
 
-      const boundaryPage = yield* collectWait(notebooks, boundaryCell, Option.none(), 5_000);
-      const boundaryComplete = completion(boundaryPage);
-      const boundaryContent = content(boundaryPage);
-      assert.equal(boundaryComplete.status, "succeeded");
-      assert.equal(boundaryComplete.nextCursor.toString(), "oc1:o1:l0");
-      assert.equal(boundaryComplete.hasMore, true);
-      assert.equal(Chunk.size(boundaryContent), 2);
-      assert.ok(CellOutput.Content.$is("text")(Chunk.getUnsafe(boundaryContent, 0)));
-      assert.ok(CellOutput.Content.$is("image")(Chunk.getUnsafe(boundaryContent, 1)));
+        const linesPage = yield* collectWait(notebooks, cell, Option.none(), 5_000);
+        const linesComplete = completion(linesPage);
+        assert.equal(linesComplete.status, "succeeded");
+        assert.equal(linesComplete.nextCursor.toString(), "oc1:o0:l2000");
+        assert.equal(linesComplete.hasMore, true);
+        assert.equal(
+          pipe(text(linesPage), Str.linesWithSeparators, Chunk.fromIterable, Chunk.size),
+          2_000,
+        );
+        assert.equal(Chunk.some(content(linesPage), CellOutput.Content.$is("image")), false);
 
-      const afterImagePage = yield* collectWait(
-        notebooks,
-        boundaryCell,
-        Option.some(boundaryComplete.nextCursor),
-        5_000,
-      );
-      const afterImageComplete = completion(afterImagePage);
-      assert.equal(afterImageComplete.status, "succeeded");
-      assert.equal(afterImageComplete.nextCursor.toString(), "oc1:o2:l0");
-      assert.equal(afterImageComplete.hasMore, false);
-      assert.equal(text(afterImagePage), "text after image\n");
-    }),
-  ),
+        const imagePage = yield* collectWait(
+          notebooks,
+          cell,
+          Option.some(linesComplete.nextCursor),
+          5_000,
+        );
+        const imageComplete = completion(imagePage);
+        const imageContent = content(imagePage);
+        assert.equal(imageComplete.status, "succeeded");
+        assert.equal(imageComplete.nextCursor.toString(), "oc1:o3:l0");
+        assert.equal(imageComplete.hasMore, true);
+        assert.equal(Chunk.size(imageContent), 4);
+
+        const remainingLine = Chunk.getUnsafe(imageContent, 0);
+        const beforeImage = Chunk.getUnsafe(imageContent, 1);
+        const annotation = Chunk.getUnsafe(imageContent, 2);
+        const image = Chunk.getUnsafe(imageContent, 3);
+        assert.ok(CellOutput.Content.$is("text")(remainingLine));
+        assert.equal(remainingLine.text, "x");
+        assert.ok(CellOutput.Content.$is("text")(beforeImage));
+        assert.equal(beforeImage.text, "text before image\n");
+        assert.ok(CellOutput.Content.$is("text")(annotation));
+        assert.match(annotation.text, /^\[Image\]\(<.*artifact_/);
+        assert.match(annotation.text, /\{image\/png,text\/plain\}\n$/);
+        assert.ok(CellOutput.Content.$is("image")(image));
+        assert.equal(image.mimeType, "image/png");
+        assert.notEqual(image.data.length, 0);
+
+        const tailPage = yield* collectWait(
+          notebooks,
+          cell,
+          Option.some(imageComplete.nextCursor),
+          5_000,
+        );
+        const tailComplete = completion(tailPage);
+        assert.equal(tailComplete.status, "succeeded");
+        assert.equal(tailComplete.nextCursor.toString(), "oc1:o4:l0");
+        assert.equal(tailComplete.hasMore, false);
+        assert.equal(text(tailPage), "text after image\n");
+      }),
+    ),
 );
 
 test("wait exposes byte cursors for open and oversized lines", { timeout: 20_000 }, () =>
@@ -341,7 +356,10 @@ console.log("progress-after");
         );
 
         yield* pipe(Deferred.await(firstOutput), Effect.timeout("5 seconds"));
-        const completedEarly = yield* pipe(Fiber.await(progressiveWait), Effect.timeoutOption("50 millis"));
+        const completedEarly = yield* pipe(
+          Fiber.await(progressiveWait),
+          Effect.timeoutOption("50 millis"),
+        );
         assert.equal(Option.isNone(completedEarly), true);
 
         const progressiveEvents = yield* Fiber.join(progressiveWait);
@@ -349,7 +367,9 @@ console.log("progress-after");
         const progressiveText = text(progressiveEvents);
         assert.equal(progressiveCompletion.status, "succeeded");
         assert.ok(progressiveText.indexOf("progress-before") >= 0);
-        assert.ok(progressiveText.indexOf("progress-after") > progressiveText.indexOf("progress-before"));
+        assert.ok(
+          progressiveText.indexOf("progress-after") > progressiveText.indexOf("progress-before"),
+        );
 
         const timeoutCell = yield* notebooks.start(
           new Notebook.StartInput({
@@ -413,7 +433,10 @@ console.log("timeout-after");
         );
         const terminalCompletion = completion(terminalEvents);
         assert.equal(terminalCompletion.status, "succeeded");
-        assert.equal(terminalCompletion.nextCursor.toString(), resumedCompletion.nextCursor.toString());
+        assert.equal(
+          terminalCompletion.nextCursor.toString(),
+          resumedCompletion.nextCursor.toString(),
+        );
         assert.equal(Chunk.some(terminalEvents, Notebook.WaitEvent.$is("content")), false);
       }),
     ),

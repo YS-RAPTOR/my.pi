@@ -1,15 +1,6 @@
 import * as Pi from "@earendil-works/pi-coding-agent";
 import { extension } from "mime-types";
-import {
-  Chunk,
-  Data,
-  Effect,
-  Match,
-  pipe,
-  Predicate,
-  Schema,
-  String as Str,
-} from "effect";
+import { Chunk, Data, Effect, Match, pipe, Predicate, Schema, String as Str } from "effect";
 import { Jupyter } from "#o/jupyter";
 
 export type Handling = "concatenate" | "indivisible" | "reference";
@@ -35,12 +26,10 @@ export const ruleFor = pipe(
   Match.when("image/svg+xml", () => ["indivisible", "utf8"]),
   Match.when(Str.startsWith("image/"), () => ["indivisible", "base64"]),
   Match.when("application/javascript", () => ["reference", "utf8"]),
-  Match.whenOr(
-    Str.startsWith("audio/"),
-    Str.startsWith("video/"),
-    "application/pdf",
-    () => ["reference", "base64"],
-  ),
+  Match.whenOr(Str.startsWith("audio/"), Str.startsWith("video/"), "application/pdf", () => [
+    "reference",
+    "base64",
+  ]),
   Match.orElse(() => ["reference", "json"]),
 );
 
@@ -79,10 +68,7 @@ export const fitsInline = (representations: Chunk.Chunk<Representation>) => {
     }),
   );
 
-  return (
-    measurement.bytes <= Pi.DEFAULT_MAX_BYTES &&
-    measurement.lines <= Pi.DEFAULT_MAX_LINES
-  );
+  return measurement.bytes <= Pi.DEFAULT_MAX_BYTES && measurement.lines <= Pi.DEFAULT_MAX_LINES;
 };
 
 const rank = pipe(
@@ -100,9 +86,8 @@ const rank = pipe(
   Match.orElse(() => 90),
 );
 
-export const preferred = <A>(
-  entries: ReadonlyArray<readonly [mime: string, value: A]>,
-) => [...entries].sort(([left], [right]) => rank(left) - rank(right))[0];
+export const preferred = <A>(entries: ReadonlyArray<readonly [mime: string, value: A]>) =>
+  [...entries].sort(([left], [right]) => rank(left) - rank(right))[0];
 
 export const decodeText = (mime: string, value: Schema.Json | undefined) =>
   mime.startsWith("text/")

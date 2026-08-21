@@ -1,7 +1,6 @@
 import { Schema, pipe } from "effect";
 
-const UUID =
-  "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
 export const NotebookId = pipe(
   Schema.String.check(Schema.isPattern(new RegExp(`^nb_${UUID}$`))),

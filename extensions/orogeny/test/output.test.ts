@@ -1,6 +1,14 @@
 import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,7 +19,8 @@ import { Jupyter } from "#o/jupyter";
 import { CellOutput } from "#o/output";
 import * as Mime from "../src/output/mime.ts";
 
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
 const outputLayer = pipe(CellOutput.layer, Layer.provide(NodeServices.layer));
 const decodeBundle = Schema.decodeUnknownSync(Jupyter.MimeBundle);
@@ -20,7 +29,9 @@ const decodeOutputLine = Schema.decodeUnknownSync(CellOutput.OutputLine);
 const run = <A, E>(effect: Effect.Effect<A, E, CellOutput.Service>) =>
   pipe(effect, Effect.provide(outputLayer), Effect.runPromise);
 
-const fixture = async <A, E>(body: (outputs: CellOutput.Interface, root: string) => Effect.Effect<A, E>) => {
+const fixture = async <A, E>(
+  body: (outputs: CellOutput.Interface, root: string) => Effect.Effect<A, E>,
+) => {
   const root = mkdtempSync(join(tmpdir(), "orogeny-output-test-"));
   try {
     return await run(
@@ -99,7 +110,10 @@ const artifactDirectories = (directory: string) =>
     .map((entry) => entry.name);
 
 const normalizedStream = (directory: string) =>
-  readFileSync(join(directory, "streams.log"), "utf8").replace(/\[[^\]]+ (stdout|stderr)\] /g, "[$1] ");
+  readFileSync(join(directory, "streams.log"), "utf8").replace(
+    /\[[^\]]+ (stdout|stderr)\] /g,
+    "[$1] ",
+  );
 
 test("stored MIME schema requires exactly one storage representation", () => {
   const base = {
@@ -107,7 +121,8 @@ test("stored MIME schema requires exactly one storage representation", () => {
     timestamp: "2026-03-01T00:00:00.000Z",
     metadata: {},
   } as const;
-  const accepts = (value: Schema.Json) => Option.isSome(Schema.decodeUnknownOption(CellOutput.OutputRecord)(value));
+  const accepts = (value: Schema.Json) =>
+    Option.isSome(Schema.decodeUnknownOption(CellOutput.OutputRecord)(value));
 
   assert.equal(accepts({ ...base, value: { "text/plain": "ok" } }), true);
   assert.equal(accepts({ ...base, artifact_id: "artifact_123" }), true);
@@ -122,7 +137,10 @@ test("stored MIME schema requires exactly one storage representation", () => {
   );
 
   for (const cursor of ["", "oc2:o0:l0", "oc1:o-1:l0", "oc1:o0:l-1", "oc1:o0:l0:b0"])
-    assert.equal(Option.isNone(Schema.decodeUnknownOption(CellOutput.Cursor.FromString)(cursor)), true);
+    assert.equal(
+      Option.isNone(Schema.decodeUnknownOption(CellOutput.Cursor.FromString)(cursor)),
+      true,
+    );
 });
 
 test("MIME policy covers every handling, encoding, priority, and inline guard", async () => {
@@ -154,7 +172,12 @@ test("MIME policy covers every handling, encoding, priority, and inline guard", 
     assert.equal(Mime.preferred(entries)?.[0], priority[index]);
   }
 
-  for (const mime of ["text/plain", "image/svg+xml", "application/vnd.plotly.v1+json", "application/x.custom+json"])
+  for (const mime of [
+    "text/plain",
+    "image/svg+xml",
+    "application/vnd.plotly.v1+json",
+    "application/x.custom+json",
+  ])
     assert.equal(Mime.mimeFromFilename(Mime.filename(mime)), mime);
 
   const small = await Effect.runPromise(Mime.normalize(decodeBundle({ "text/plain": "small" })));
@@ -210,7 +233,10 @@ test("stream chunks, channel switches, and rich-output ranges preserve order", (
       yield* chunks.append(Jupyter.Output.stream({ name: "stderr", text: "err\n" }));
       yield* chunks.append(Jupyter.Output.stream({ name: "stdout", text: "" }));
 
-      assert.equal(normalizedStream(chunksDirectory), "[stdout] hello\n[stdout] next\n[stderr] err\n");
+      assert.equal(
+        normalizedStream(chunksDirectory),
+        "[stdout] hello\n[stdout] next\n[stderr] err\n",
+      );
       assert.deepEqual(
         records(chunksDirectory).map((record) => record.type),
         ["stream"],
@@ -269,7 +295,9 @@ test("error, clear, display update, and execute result round-trip", () =>
           },
         ),
       );
-      yield* handle.append(display({ "text/plain": "42\n" }, { kind: "execute_result", count: Option.some(7) }));
+      yield* handle.append(
+        display({ "text/plain": "42\n" }, { kind: "execute_result", count: Option.some(7) }),
+      );
 
       assert.deepEqual(textBlocks(yield* read(handle)), [
         "frame one\nframe two\nTypeError: boom\n",
@@ -368,7 +396,9 @@ test("reference MIME encodings are lossless and project as artifact links", () =
         const record = stored[index];
         if (record?.type !== "display_data" || record.artifact_id === undefined)
           return yield* Effect.die(`Expected artifact for ${mime}`);
-        const representation = readFileSync(join(directory, record.artifact_id, Mime.filename(mime)));
+        const representation = readFileSync(
+          join(directory, record.artifact_id, Mime.filename(mime)),
+        );
         assert.deepEqual(representation, expected);
       }
 
@@ -376,8 +406,14 @@ test("reference MIME encodings are lossless and project as artifact links", () =
       assert.equal(imageBlocks(projected).length, 0);
       assert.equal(textBlocks(projected).length, cases.length);
       for (const [index, [mime]] of cases.entries()) {
-        assert.match(textBlocks(projected)[index] ?? "", /^\[artifact_[\w-]+\]\(<.*artifact_[\w-]+>\)/);
-        assert.match(textBlocks(projected)[index] ?? "", new RegExp(`\\{${mime.replaceAll("+", "\\+")}\\}`));
+        assert.match(
+          textBlocks(projected)[index] ?? "",
+          /^\[artifact_[\w-]+\]\(<.*artifact_[\w-]+>\)/,
+        );
+        assert.match(
+          textBlocks(projected)[index] ?? "",
+          new RegExp(`\\{${mime.replaceAll("+", "\\+")}\\}`),
+        );
       }
     }),
   ));
@@ -433,7 +469,9 @@ test("images are normalized, page-bounded, and invalid images fall back to refer
 
       const invalidDirectory = join(root, "invalid-image");
       const invalid = yield* outputs.open(invalidDirectory);
-      yield* invalid.append(display({ "image/png": Buffer.from("not an image").toString("base64") }));
+      yield* invalid.append(
+        display({ "image/png": Buffer.from("not an image").toString("base64") }),
+      );
       const fallback = yield* read(invalid);
       assert.equal(imageBlocks(fallback).length, 0);
       assert.match(text(fallback), /^\[artifact_[\w-]+\]\(/);
@@ -513,7 +551,9 @@ test("oversized UTF-8 lines resume exactly and invalid content cursors fail", ()
         new CellOutput.Position({ output: 0, line: 0, byte: 99 }),
       ];
       for (const position of invalid) {
-        const failure = yield* Effect.flip(read(handle, { cursor: CellOutput.Cursor.from(position) }));
+        const failure = yield* Effect.flip(
+          read(handle, { cursor: CellOutput.Cursor.from(position) }),
+        );
         assert.equal(failure.operation, "read cell output");
       }
     }),

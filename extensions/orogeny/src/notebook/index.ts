@@ -87,9 +87,7 @@ export class OperationFailed extends Data.TaggedError("Notebook")<{
 }> {}
 
 export type Interface = Readonly<{
-  create: (
-    input?: CreateInput,
-  ) => Effect.Effect<NotebookSummary, OperationFailed>;
+  create: (input?: CreateInput) => Effect.Effect<NotebookSummary, OperationFailed>;
   start: (input: StartInput) => Effect.Effect<CellId, OperationFailed>;
   wait: (input: WaitInput) => Stream.Stream<WaitEvent, OperationFailed>;
   stopCell: (id: CellId) => Effect.Effect<void, OperationFailed>;
@@ -97,9 +95,7 @@ export type Interface = Readonly<{
   list: Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
 }>;
 
-export class Service extends Context.Service<Service, Interface>()(
-  "orogeny/Notebook.Runtime",
-) {}
+export class Service extends Context.Service<Service, Interface>()("orogeny/Notebook.Runtime") {}
 
 class NotebookState extends Data.Class<{
   readonly status: "idle" | "busy" | "closed";
@@ -227,9 +223,7 @@ export const layer = (config: Config) =>
             mode: 0o700,
           }),
           Effect.andThen(files.makeDirectory(directory, { mode: 0o700 })),
-          Effect.andThen(
-            files.writeFileString(path, "", { flag: "wx", mode: 0o600 }),
-          ),
+          Effect.andThen(files.writeFileString(path, "", { flag: "wx", mode: 0o600 })),
           journalError,
         );
         const artifact = new Artifact({
@@ -248,9 +242,9 @@ export const layer = (config: Config) =>
         pipe(
           Ref.get(registry),
           Effect.flatMap((state) =>
-            Effect.fromOption(() =>
-              runtimeFailure("find notebook", `Unknown notebook ID: ${id}`),
-            )(HashMap.get(state.notebooks, id)),
+            Effect.fromOption(() => runtimeFailure("find notebook", `Unknown notebook ID: ${id}`))(
+              HashMap.get(state.notebooks, id),
+            ),
           ),
         );
 
@@ -258,42 +252,30 @@ export const layer = (config: Config) =>
         pipe(
           Ref.get(registry),
           Effect.flatMap((state) =>
-            Effect.fromOption(() =>
-              runtimeFailure("find cell", `Unknown cell ID: ${id}`),
-            )(HashMap.get(state.cells, id)),
+            Effect.fromOption(() => runtimeFailure("find cell", `Unknown cell ID: ${id}`))(
+              HashMap.get(state.cells, id),
+            ),
           ),
         );
 
       const resources = (notebook: Notebook) =>
         Effect.fromOption(() =>
-          runtimeFailure(
-            "use notebook kernel",
-            `Notebook ${notebook.id} is closed`,
-          ),
+          runtimeFailure("use notebook kernel", `Notebook ${notebook.id} is closed`),
         )(notebook.resources);
 
-      const summary = Effect.fn("Notebook.summary")(function* (
-        notebook: Notebook,
-      ) {
+      const summary = Effect.fn("Notebook.summary")(function* (notebook: Notebook) {
         const state = yield* Ref.get(notebook.status);
         return new NotebookSummary({
           id: notebook.id,
           name: notebook.name,
-          current: Option.contains(
-            (yield* Ref.get(registry)).current,
-            notebook.id,
-          ),
+          current: Option.contains((yield* Ref.get(registry)).current, notebook.id),
           artifactPath: notebook.artifact.directory,
           createdAt: notebook.createdAt,
           ...state,
         });
       });
 
-      const idleNotebook = (
-        notebook: Notebook,
-        id: CellId,
-        updatedAt: string,
-      ) =>
+      const idleNotebook = (notebook: Notebook, id: CellId, updatedAt: string) =>
         Ref.update(notebook.status, (state) =>
           state.status === "busy" && Option.contains(state.activeCellId, id)
             ? new NotebookState({
@@ -353,8 +335,7 @@ export const layer = (config: Config) =>
       ): Effect.Effect<void, E, R> =>
         notebook.admission.withPermit(
           Effect.gen(function* () {
-            if ((yield* Ref.get(notebook.status)).status === "closed")
-              return yield* after;
+            if ((yield* Ref.get(notebook.status)).status === "closed") return yield* after;
             yield* pipe(
               Effect.gen(function* () {
                 yield* before;
@@ -440,9 +421,7 @@ export const layer = (config: Config) =>
       const appendOutput = (cell: Cell, output: Jupyter.Output) =>
         pipe(
           cell.output.append(output),
-          Effect.mapError(
-            (cause) => new JournalFailed({ message: cause.message }),
-          ),
+          Effect.mapError((cause) => new JournalFailed({ message: cause.message })),
         );
 
       const runCell = Effect.fn("Notebook.runCell")(function* (
@@ -485,8 +464,7 @@ export const layer = (config: Config) =>
             }),
           ),
           Effect.catchTags({
-            NotebookJournalOperationFailed: (cause) =>
-              storageFailure(notebook, cell, cause),
+            NotebookJournalOperationFailed: (cause) => storageFailure(notebook, cell, cause),
             Jupyter: (cause) => crashFailure(notebook, cell, cause),
           }),
         );
@@ -525,77 +503,38 @@ export const layer = (config: Config) =>
         });
       });
 
-      const create: Interface["create"] = Effect.fn("Notebook.create")(
-        function* (input = new CreateInput({ name: Option.none() })) {
-          return yield* creation.withPermit(
-            Effect.gen(function* () {
-              const state = yield* Ref.get(registry);
-              if (state.live >= config.maxLiveNotebooks)
-                return yield* runtimeFailure(
-                  "create notebook",
-                  `The live notebook limit of ${config.maxLiveNotebooks} has been reached`,
-                );
-              const id = notebookId(`nb_${crypto.randomUUID()}`);
-              const createdAt = yield* now;
-              const artifact = yield* pipe(
-                createArtifact(id, input.name),
-                Effect.mapError((cause) =>
-                  runtimeFailure("create notebook artifact", cause),
-                ),
+      const create: Interface["create"] = Effect.fn("Notebook.create")(function* (
+        input = new CreateInput({ name: Option.none() }),
+      ) {
+        return yield* creation.withPermit(
+          Effect.gen(function* () {
+            const state = yield* Ref.get(registry);
+            if (state.live >= config.maxLiveNotebooks)
+              return yield* runtimeFailure(
+                "create notebook",
+                `The live notebook limit of ${config.maxLiveNotebooks} has been reached`,
               );
-              const scope = yield* Scope.fork(rootScope);
-              const opened = yield* pipe(
-                kernels.open,
-                Scope.provide(scope),
-                Effect.exit,
-              );
-              if (Exit.isFailure(opened)) {
-                const notebook = yield* makeNotebook(
-                  id,
-                  input.name,
-                  artifact,
-                  createdAt,
-                  new NotebookState({
-                    status: "closed",
-                    activeCellId: Option.none(),
-                    closeReason: Option.some("startup_failed"),
-                    updatedAt: yield* now,
-                  }),
-                  Option.none(),
-                );
-                yield* Ref.update(
-                  registry,
-                  (value) =>
-                    new Registry({
-                      ...value,
-                      notebooks: HashMap.set(value.notebooks, id, notebook),
-                    }),
-                );
-                yield* pipe(
-                  append(artifact, {
-                    event: "notebook_closed",
-                    reason: "startup_failed",
-                  }),
-                  Effect.ignore,
-                );
-                yield* Scope.close(scope, Exit.void);
-                return yield* runtimeFailure(
-                  "start notebook kernel",
-                  `${Cause.pretty(opened.cause)}\nNotebook: ${id}\nArtifact: ${artifact.directory}`,
-                );
-              }
+            const id = notebookId(`nb_${crypto.randomUUID()}`);
+            const createdAt = yield* now;
+            const artifact = yield* pipe(
+              createArtifact(id, input.name),
+              Effect.mapError((cause) => runtimeFailure("create notebook artifact", cause)),
+            );
+            const scope = yield* Scope.fork(rootScope);
+            const opened = yield* pipe(kernels.open, Scope.provide(scope), Effect.exit);
+            if (Exit.isFailure(opened)) {
               const notebook = yield* makeNotebook(
                 id,
                 input.name,
                 artifact,
                 createdAt,
                 new NotebookState({
-                  status: "idle",
+                  status: "closed",
                   activeCellId: Option.none(),
-                  closeReason: Option.none(),
-                  updatedAt: createdAt,
+                  closeReason: Option.some("startup_failed"),
+                  updatedAt: yield* now,
                 }),
-                Option.some(new Resources({ kernel: opened.value, scope })),
+                Option.none(),
               );
               yield* Ref.update(
                 registry,
@@ -603,105 +542,125 @@ export const layer = (config: Config) =>
                   new Registry({
                     ...value,
                     notebooks: HashMap.set(value.notebooks, id, notebook),
-                    current: Option.some(id),
-                    live: value.live + 1,
                   }),
               );
-              return yield* summary(notebook);
-            }),
-          );
-        },
-      );
-
-      const start: Interface["start"] = Effect.fn("Notebook.start")(
-        function* (input) {
-          const notebook = yield* resolveNotebook(input.notebookId);
-          const live = yield* resources(notebook);
-
-          const cell = yield* notebook.admission.withPermit(
-            Effect.gen(function* () {
-              const state = yield* Ref.get(notebook.status);
-              if (state.status !== "idle")
-                return yield* runtimeFailure(
-                  "start notebook cell",
-                  `Notebook ${notebook.id} is ${state.status}`,
-                );
-              const id = cellId(`cell_${crypto.randomUUID()}`);
-              const startedAt = yield* now;
-              const output = yield* pipe(
-                outputs.open(
-                  paths.join(notebook.artifact.directory, "cells", id),
-                ),
-                Effect.mapError((cause) =>
-                  runtimeFailure("create cell output", cause),
-                ),
-              );
-              const cell = new Cell({
-                id,
-                notebookId: notebook.id,
-                startedAt,
-                output,
-                interruptRequested: yield* Ref.make(false),
-                terminal: yield* Deferred.make<Terminal>(),
-                completion: yield* Semaphore.make(1),
-              });
-              yield* Ref.set(
-                notebook.status,
-                new NotebookState({
-                  status: "busy",
-                  activeCellId: Option.some(id),
-                  closeReason: Option.none(),
-                  updatedAt: startedAt,
+              yield* pipe(
+                append(artifact, {
+                  event: "notebook_closed",
+                  reason: "startup_failed",
                 }),
+                Effect.ignore,
               );
-              yield* Ref.update(
-                registry,
-                (state) =>
-                  new Registry({
-                    ...state,
-                    cells: HashMap.set(state.cells, id, cell),
-                    current: Option.some(notebook.id),
-                  }),
+              yield* Scope.close(scope, Exit.void);
+              return yield* runtimeFailure(
+                "start notebook kernel",
+                `${Cause.pretty(opened.cause)}\nNotebook: ${id}\nArtifact: ${artifact.directory}`,
               );
-              return cell;
-            }),
-          );
+            }
+            const notebook = yield* makeNotebook(
+              id,
+              input.name,
+              artifact,
+              createdAt,
+              new NotebookState({
+                status: "idle",
+                activeCellId: Option.none(),
+                closeReason: Option.none(),
+                updatedAt: createdAt,
+              }),
+              Option.some(new Resources({ kernel: opened.value, scope })),
+            );
+            yield* Ref.update(
+              registry,
+              (value) =>
+                new Registry({
+                  ...value,
+                  notebooks: HashMap.set(value.notebooks, id, notebook),
+                  current: Option.some(id),
+                  live: value.live + 1,
+                }),
+            );
+            return yield* summary(notebook);
+          }),
+        );
+      });
 
-          yield* pipe(
-            append(notebook.artifact, {
-              event: "cell_started",
-              cell_id: cell.id,
-              code: input.code,
-            }),
-            Effect.catchTag("NotebookJournalOperationFailed", (cause) =>
-              pipe(
-                storageFailure(notebook, cell, cause),
-                Effect.andThen(
-                  Effect.fail(runtimeFailure("journal notebook cell", cause)),
-                ),
-              ),
+      const start: Interface["start"] = Effect.fn("Notebook.start")(function* (input) {
+        const notebook = yield* resolveNotebook(input.notebookId);
+        const live = yield* resources(notebook);
+
+        const cell = yield* notebook.admission.withPermit(
+          Effect.gen(function* () {
+            const state = yield* Ref.get(notebook.status);
+            if (state.status !== "idle")
+              return yield* runtimeFailure(
+                "start notebook cell",
+                `Notebook ${notebook.id} is ${state.status}`,
+              );
+            const id = cellId(`cell_${crypto.randomUUID()}`);
+            const startedAt = yield* now;
+            const output = yield* pipe(
+              outputs.open(paths.join(notebook.artifact.directory, "cells", id)),
+              Effect.mapError((cause) => runtimeFailure("create cell output", cause)),
+            );
+            const cell = new Cell({
+              id,
+              notebookId: notebook.id,
+              startedAt,
+              output,
+              interruptRequested: yield* Ref.make(false),
+              terminal: yield* Deferred.make<Terminal>(),
+              completion: yield* Semaphore.make(1),
+            });
+            yield* Ref.set(
+              notebook.status,
+              new NotebookState({
+                status: "busy",
+                activeCellId: Option.some(id),
+                closeReason: Option.none(),
+                updatedAt: startedAt,
+              }),
+            );
+            yield* Ref.update(
+              registry,
+              (state) =>
+                new Registry({
+                  ...state,
+                  cells: HashMap.set(state.cells, id, cell),
+                  current: Option.some(notebook.id),
+                }),
+            );
+            return cell;
+          }),
+        );
+
+        yield* pipe(
+          append(notebook.artifact, {
+            event: "cell_started",
+            cell_id: cell.id,
+            code: input.code,
+          }),
+          Effect.catchTag("NotebookJournalOperationFailed", (cause) =>
+            pipe(
+              storageFailure(notebook, cell, cause),
+              Effect.andThen(Effect.fail(runtimeFailure("journal notebook cell", cause))),
             ),
-          );
+          ),
+        );
 
-          const execution = yield* pipe(
-            live.kernel.start(input.code),
-            Effect.catch((cause) =>
-              pipe(
-                crashFailure(notebook, cell, cause),
-                Effect.andThen(
-                  Effect.fail(runtimeFailure("submit notebook cell", cause)),
-                ),
-              ),
+        const execution = yield* pipe(
+          live.kernel.start(input.code),
+          Effect.catch((cause) =>
+            pipe(
+              crashFailure(notebook, cell, cause),
+              Effect.andThen(Effect.fail(runtimeFailure("submit notebook cell", cause))),
             ),
-          );
+          ),
+        );
 
-          yield* pipe(
-            runCell(notebook, cell, execution),
-            Effect.forkIn(live.scope),
-          );
-          return cell.id;
-        },
-      );
+        yield* pipe(runCell(notebook, cell, execution), Effect.forkIn(live.scope));
+        return cell.id;
+      });
 
       const wait: Interface["wait"] = (input) =>
         Stream.callback<WaitEvent, OperationFailed>((queue) =>
@@ -728,26 +687,20 @@ export const layer = (config: Config) =>
                       maxLines: Pi.DEFAULT_MAX_LINES - lines,
                     }),
                   ),
-                  Effect.mapError((cause) =>
-                    runtimeFailure("read cell output", cause.message),
-                  ),
+                  Effect.mapError((cause) => runtimeFailure("read cell output", cause.message)),
                 );
                 yield* Effect.forEach(
                   page.content,
                   (value) => Queue.offer(queue, WaitEvent.content({ value })),
-                  { discard: true },
+                  {
+                    discard: true,
+                  },
                 );
                 const nextBytes = bytes + page.bytes;
                 const nextLines = lines + page.lines;
                 const now = yield* Clock.currentTimeMillis;
-                if (
-                  page.boundary !== "exhausted" ||
-                  sealed ||
-                  now >= deadline
-                ) {
-                  const status: CellStatus = (yield* Deferred.isDone(
-                    cell.terminal,
-                  ))
+                if (page.boundary !== "exhausted" || sealed || now >= deadline) {
+                  const status: CellStatus = (yield* Deferred.isDone(cell.terminal))
                     ? (yield* Deferred.await(cell.terminal)).status
                     : "running";
                   yield* Queue.offer(
@@ -768,18 +721,11 @@ export const layer = (config: Config) =>
                 return yield* consume(page.cursor, nextBytes, nextLines);
               });
 
-            yield* consume(
-              Option.getOrElse(input.cursor, CellOutput.Cursor.start),
-              0,
-              0,
-            );
+            yield* consume(Option.getOrElse(input.cursor, CellOutput.Cursor.start), 0, 0);
           }),
         );
 
-      const interrupt = Effect.fn("Notebook.interrupt")(function* (
-        cell: Cell,
-        live: Resources,
-      ) {
+      const interrupt = Effect.fn("Notebook.interrupt")(function* (cell: Cell, live: Resources) {
         yield* Ref.set(cell.interruptRequested, true);
         const requested = yield* pipe(
           live.kernel.interrupt,
@@ -797,73 +743,61 @@ export const layer = (config: Config) =>
         );
       });
 
-      const stopCell: Interface["stopCell"] = Effect.fn("Notebook.stopCell")(
+      const stopCell: Interface["stopCell"] = Effect.fn("Notebook.stopCell")(function* (id) {
+        const cell = yield* getCell(id);
+        if (yield* Deferred.isDone(cell.terminal)) return;
+        const notebook = yield* getNotebook(cell.notebookId);
+        if (yield* interrupt(cell, yield* resources(notebook))) return;
+        yield* pipe(
+          finish(
+            notebook,
+            cell,
+            new Terminal({
+              status: "interrupted",
+              completedAt: yield* now,
+              message: Option.none(),
+            }),
+          ),
+          recoverStorage(notebook, cell),
+        );
+        yield* pipe(close(notebook, "unresponsive"), recoverStorage(notebook, cell));
+      });
+
+      const stopNotebook: Interface["stopNotebook"] = Effect.fn("Notebook.stopNotebook")(
         function* (id) {
-          const cell = yield* getCell(id);
-          if (yield* Deferred.isDone(cell.terminal)) return;
-          const notebook = yield* getNotebook(cell.notebookId);
-          if (yield* interrupt(cell, yield* resources(notebook))) return;
+          const notebook = yield* getNotebook(id);
+          const state = yield* Ref.get(notebook.status);
+          if (state.status === "closed") return;
+          const live = yield* resources(notebook);
+          if (state.status === "busy") {
+            const active = yield* Effect.fromOption(() =>
+              runtimeFailure("stop notebook", "Busy notebook has no active cell"),
+            )(state.activeCellId);
+            const cell = yield* getCell(active);
+            if (!(yield* Deferred.isDone(cell.terminal)) && !(yield* interrupt(cell, live)))
+              yield* pipe(
+                finish(
+                  notebook,
+                  cell,
+                  new Terminal({
+                    status: "interrupted",
+                    completedAt: yield* now,
+                    message: Option.none(),
+                  }),
+                ),
+                recoverStorage(notebook, cell),
+              );
+          }
           yield* pipe(
-            finish(
-              notebook,
-              cell,
-              new Terminal({
-                status: "interrupted",
-                completedAt: yield* now,
-                message: Option.none(),
-              }),
-            ),
-            recoverStorage(notebook, cell),
-          );
-          yield* pipe(
-            close(notebook, "unresponsive"),
-            recoverStorage(notebook, cell),
+            close(notebook, "manual"),
+            Effect.mapError((cause) => runtimeFailure("close notebook journal", cause)),
           );
         },
       );
 
-      const stopNotebook: Interface["stopNotebook"] = Effect.fn(
-        "Notebook.stopNotebook",
-      )(function* (id) {
-        const notebook = yield* getNotebook(id);
-        const state = yield* Ref.get(notebook.status);
-        if (state.status === "closed") return;
-        const live = yield* resources(notebook);
-        if (state.status === "busy") {
-          const active = yield* Effect.fromOption(() =>
-            runtimeFailure("stop notebook", "Busy notebook has no active cell"),
-          )(state.activeCellId);
-          const cell = yield* getCell(active);
-          if (
-            !(yield* Deferred.isDone(cell.terminal)) &&
-            !(yield* interrupt(cell, live))
-          )
-            yield* pipe(
-              finish(
-                notebook,
-                cell,
-                new Terminal({
-                  status: "interrupted",
-                  completedAt: yield* now,
-                  message: Option.none(),
-                }),
-              ),
-              recoverStorage(notebook, cell),
-            );
-        }
-        yield* pipe(
-          close(notebook, "manual"),
-          Effect.mapError((cause) =>
-            runtimeFailure("close notebook journal", cause),
-          ),
-        );
-      });
-
       const list: Interface["list"] = pipe(
         Ref.get(registry),
-        Effect.flatMap((state) =>
-          Effect.forEach(HashMap.values(state.notebooks), summary),
-        ),
+        Effect.flatMap((state) => Effect.forEach(HashMap.values(state.notebooks), summary)),
         Effect.map(Chunk.fromIterable),
       );
 

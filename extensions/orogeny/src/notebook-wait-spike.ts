@@ -4,12 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import * as Pi from "@earendil-works/pi-coding-agent";
-import { Chunk, Console, Data, Deferred, Effect, Fiber, Layer, Option, pipe, Stream, String as Str } from "effect";
+import {
+  Chunk,
+  Console,
+  Data,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  pipe,
+  Stream,
+  String as Str,
+} from "effect";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-wait-spike-"));
 
 class AssertionFailed extends Data.TaggedError("NotebookWaitSpikeAssertionFailed")<{
@@ -90,7 +103,10 @@ await Deno.jupyter.display({ "image/png": "${TINY_PNG}", "text/plain": "one pixe
   );
   const logicalLines = pipe(linesText, Str.linesWithSeparators, Chunk.fromIterable, Chunk.size);
   yield* assert(logicalLines === 2_000, `Expected 2,000 lines, received ${logicalLines}`);
-  yield* assert(linesPage.cursor.toString() === "oc1:o0:l2000", `Unexpected line cursor: ${linesPage.cursor}`);
+  yield* assert(
+    linesPage.cursor.toString() === "oc1:o0:l2000",
+    `Unexpected line cursor: ${linesPage.cursor}`,
+  );
   yield* assert(linesPage.hasMore, "The image page was not left unread");
 
   const imagePage = yield* read(notebooks, cell, Option.some(linesPage.cursor));
@@ -103,12 +119,27 @@ await Deno.jupyter.display({ "image/png": "${TINY_PNG}", "text/plain": "one pixe
     ),
     Chunk.toReadonlyArray,
   );
-  yield* assert(imageContent.length === 3, `Expected three image-page blocks, received ${imageContent.length}`);
+  yield* assert(
+    imageContent.length === 3,
+    `Expected three image-page blocks, received ${imageContent.length}`,
+  );
   const [remaining, annotation, image] = imageContent;
-  yield* assert(remaining?.type === "text" && remaining.value === "x", "Remaining line was missing");
-  yield* assert(annotation?.type === "text" && annotation.value.startsWith("[Image]("), "Image annotation was missing");
-  yield* assert(image?.type === "image" && image.mimeType === "image/png", "PNG content block was missing");
-  yield* assert(imagePage.cursor.toString() === "oc1:o2:l0", `Unexpected image cursor: ${imagePage.cursor}`);
+  yield* assert(
+    remaining?.type === "text" && remaining.value === "x",
+    "Remaining line was missing",
+  );
+  yield* assert(
+    annotation?.type === "text" && annotation.value.startsWith("[Image]("),
+    "Image annotation was missing",
+  );
+  yield* assert(
+    image?.type === "image" && image.mimeType === "image/png",
+    "PNG content block was missing",
+  );
+  yield* assert(
+    imagePage.cursor.toString() === "oc1:o2:l0",
+    `Unexpected image cursor: ${imagePage.cursor}`,
+  );
   yield* assert(!imagePage.hasMore, "Output remained after the image");
 
   const boundaryCell = yield* notebooks.start(
@@ -132,8 +163,14 @@ await Deno.jupyter.display({ "text/plain": "text after image\\n" }, { raw: true 
     ),
     Chunk.toReadonlyArray,
   );
-  yield* assert(boundaryContent.length === 2, "Image boundary page did not contain annotation and image");
-  yield* assert(boundaryPage.cursor.toString() === "oc1:o1:l0", `Unexpected boundary cursor: ${boundaryPage.cursor}`);
+  yield* assert(
+    boundaryContent.length === 2,
+    "Image boundary page did not contain annotation and image",
+  );
+  yield* assert(
+    boundaryPage.cursor.toString() === "oc1:o1:l0",
+    `Unexpected boundary cursor: ${boundaryPage.cursor}`,
+  );
   yield* assert(boundaryPage.hasMore, "Text after the image was not left unread");
 
   const afterImagePage = yield* read(notebooks, boundaryCell, Option.some(boundaryPage.cursor));
@@ -143,8 +180,14 @@ await Deno.jupyter.display({ "text/plain": "text after image\\n" }, { raw: true 
     Chunk.map((content) => content.text),
     Chunk.join(""),
   );
-  yield* assert(afterImageText === "text after image\n", "Text after the image was not delivered next");
-  yield* assert(afterImagePage.cursor.toString() === "oc1:o2:l0", `Unexpected tail cursor: ${afterImagePage.cursor}`);
+  yield* assert(
+    afterImageText === "text after image\n",
+    "Text after the image was not delivered next",
+  );
+  yield* assert(
+    afterImagePage.cursor.toString() === "oc1:o2:l0",
+    `Unexpected tail cursor: ${afterImagePage.cursor}`,
+  );
   yield* assert(!afterImagePage.hasMore, "Output remained after the tail page");
 
   const partialCell = yield* notebooks.start(
@@ -188,8 +231,14 @@ notebookWaitCore.print("done\\n", false);
     Chunk.join(""),
   );
   yield* assert(partialPage.status === "running", "Partial-line wait did not report running");
-  yield* assert(partialPage.cursor.position.byte !== undefined, "Partial-line wait did not return a byte cursor");
-  yield* assert(partialText.endsWith("partial-loading"), "Partial-line wait did not return its committed prefix");
+  yield* assert(
+    partialPage.cursor.position.byte !== undefined,
+    "Partial-line wait did not return a byte cursor",
+  );
+  yield* assert(
+    partialText.endsWith("partial-loading"),
+    "Partial-line wait did not return its committed prefix",
+  );
 
   const continuedPage = yield* read(notebooks, partialCell, Option.some(partialPage.cursor));
   const continuedText = pipe(
@@ -240,7 +289,10 @@ await Deno.jupyter.display({ "text/plain": oversizedLine }, { raw: true });
     Chunk.map((content) => content.text),
     Chunk.join(""),
   );
-  yield* assert(oversizedTailText === "é".repeat(5), "Oversized line did not resume at its byte cursor");
+  yield* assert(
+    oversizedTailText === "é".repeat(5),
+    "Oversized line did not resume at its byte cursor",
+  );
   yield* assert(
     oversizedTail.cursor.toString() === "oc1:o1:l0",
     `Unexpected oversized tail cursor: ${oversizedTail.cursor}`,

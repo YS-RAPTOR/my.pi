@@ -116,7 +116,8 @@ const CREATE_FILE = { ...FILE, flag: "wx" } as const;
 const failed = (operation: string, cause: unknown) =>
   new OperationFailed({ operation, message: globalThis.String(cause) });
 
-const mapFailed = (operation: string) => Effect.mapError((cause: unknown) => failed(operation, cause));
+const mapFailed = (operation: string) =>
+  Effect.mapError((cause: unknown) => failed(operation, cause));
 
 const ensure = (condition: boolean, message: string) =>
   condition ? Effect.void : Effect.fail(failed("read cell output", message));
@@ -127,7 +128,11 @@ const utf8Boundary = (bytes: Uint8Array, offset: number) => {
   return boundary;
 };
 
-const sliceText = Effect.fnUntraced(function* (projection: ProjectedRecord, page: Page, input: ReadInput) {
+const sliceText = Effect.fnUntraced(function* (
+  projection: ProjectedRecord,
+  page: Page,
+  input: ReadInput,
+) {
   const position = page.position;
   const maxBytes = input.maxBytes - page.bytes;
   const maxLines = input.maxLines - page.lines;
@@ -139,7 +144,8 @@ const sliceText = Effect.fnUntraced(function* (projection: ProjectedRecord, page
     "Cursor is outside projected content",
   );
 
-  if (position.line === lineCount) return TextSlice.empty(position, projection.open ? "open" : "complete");
+  if (position.line === lineCount)
+    return TextSlice.empty(position, projection.open ? "open" : "complete");
 
   const start = position.byte ?? 0;
   const [, measured] = pipe(
@@ -222,20 +228,27 @@ const paginate = Effect.fnUntraced(function* (
   page = new Page({ position: input.cursor.position, content: Chunk.empty(), bytes: 0, lines: 0 }),
 ): Effect.fn.Return<ReadResult, OperationFailed> {
   if (page.position.output === recordCount) return page.result("exhausted", false);
-  if (page.bytes >= input.maxBytes || page.lines >= input.maxLines) return page.result("limit", true);
+  if (page.bytes >= input.maxBytes || page.lines >= input.maxLines)
+    return page.result("limit", true);
 
   const projection = yield* project(page.position.output);
   const slice = yield* sliceText(projection, page, input);
   const next = new Page({
     position: slice.position,
-    content: slice.text.length === 0 ? page.content : Chunk.append(page.content, Content.text({ text: slice.text })),
+    content:
+      slice.text.length === 0
+        ? page.content
+        : Chunk.append(page.content, Content.text({ text: slice.text })),
     bytes: page.bytes + slice.bytes,
     lines: page.lines + slice.lines,
   });
 
   const full = next.bytes >= input.maxBytes || next.lines >= input.maxLines;
   if (slice.status !== "complete")
-    return next.result(slice.status === "limit" || full ? "limit" : "exhausted", slice.status === "limit");
+    return next.result(
+      slice.status === "limit" || full ? "limit" : "exhausted",
+      slice.status === "limit",
+    );
 
   const hasImage = Option.isSome(projection.image);
   if (full && hasImage) return next.result("limit", true);
@@ -272,9 +285,13 @@ export const layer = Layer.effect(
         files.makeDirectory(paths.dirname(directory), PARENT),
         Effect.andThen(files.makeDirectory(directory, DIRECTORY)),
         Effect.andThen(
-          Effect.forEach([outputPath, streamPath], (path) => files.writeFileString(path, "", CREATE_FILE), {
-            discard: true,
-          }),
+          Effect.forEach(
+            [outputPath, streamPath],
+            (path) => files.writeFileString(path, "", CREATE_FILE),
+            {
+              discard: true,
+            },
+          ),
         ),
         mapFailed("create cell output"),
       );
@@ -402,15 +419,23 @@ export const layer = Layer.effect(
           Effect.asVoid,
         );
 
-      const project = (snapshot: Snapshot, records: ReadonlyArray<StoredRecord>, sealed: boolean): Project =>
+      const project = (
+        snapshot: Snapshot,
+        records: ReadonlyArray<StoredRecord>,
+        sealed: boolean,
+      ): Project =>
         Effect.fn("CellOutput.project")(function* (index) {
           const record = records[index];
-          if (record === undefined) return yield* failed("read cell output", "Missing output record");
+          if (record === undefined)
+            return yield* failed("read cell output", "Missing output record");
 
           if (record.type === "stream") {
             const next = records.slice(index + 1).find((candidate) => candidate.type === "stream");
             const end = next?.offset ?? snapshot.streams.length;
-            yield* ensure(record.offset <= end && end <= snapshot.streams.length, "Invalid stream byte range");
+            yield* ensure(
+              record.offset <= end && end <= snapshot.streams.length,
+              "Invalid stream byte range",
+            );
             return new ProjectedRecord({
               text: Buffer.from(snapshot.streams.subarray(record.offset, end)).toString("utf8"),
               image: Option.none(),
@@ -436,11 +461,15 @@ export const layer = Layer.effect(
 
           if (record.value !== undefined) {
             const selected = Mime.preferred(Object.entries(record.value));
-            if (selected === undefined) return yield* failed("read cell output", "MIME bundle is empty");
+            if (selected === undefined)
+              return yield* failed("read cell output", "MIME bundle is empty");
 
             const [mime, value] = selected;
             if (Mime.ruleFor(mime)[0] !== "concatenate")
-              return yield* failed("read cell output", "Inline MIME representation is not concatenate");
+              return yield* failed(
+                "read cell output",
+                "Inline MIME representation is not concatenate",
+              );
 
             return new ProjectedRecord({
               text: yield* pipe(Mime.decodeText(mime, value), mapFailed("read cell output")),
@@ -453,11 +482,14 @@ export const layer = Layer.effect(
           const artifactPath = paths.join(directory, artifactId);
           const entries = yield* pipe(
             files.readDirectory(artifactPath),
-            Effect.map((files) => files.map((file) => [Mime.mimeFromFilename(file), file] as const)),
+            Effect.map((files) =>
+              files.map((file) => [Mime.mimeFromFilename(file), file] as const),
+            ),
             mapFailed("read cell output"),
           );
           const selected = Mime.preferred(entries);
-          if (selected === undefined) return yield* failed("read cell output", "MIME bundle is empty");
+          if (selected === undefined)
+            return yield* failed("read cell output", "MIME bundle is empty");
 
           const [mime, file] = selected;
           const [handling] = Mime.ruleFor(mime);
@@ -469,7 +501,10 @@ export const layer = Layer.effect(
           const representationPath = paths.join(artifactPath, file);
           if (handling === "concatenate")
             return new ProjectedRecord({
-              text: yield* pipe(files.readFileString(representationPath), mapFailed("read cell output")),
+              text: yield* pipe(
+                files.readFileString(representationPath),
+                mapFailed("read cell output"),
+              ),
               image: Option.none(),
               open: false,
             });

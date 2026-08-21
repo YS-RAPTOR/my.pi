@@ -3,16 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import {
-  Chunk,
-  Console,
-  Data,
-  Effect,
-  Layer,
-  Option,
-  pipe,
-  Stream,
-} from "effect";
+import { Chunk, Console, Data, Effect, Layer, Option, pipe, Stream } from "effect";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
@@ -23,10 +14,7 @@ class AssertionFailed extends Data.TaggedError("NotebookSpikeAssertionFailed")<{
   readonly message: string;
 }> {}
 
-const assert = (
-  condition: boolean,
-  message: string,
-): Effect.Effect<void, AssertionFailed> =>
+const assert = (condition: boolean, message: string): Effect.Effect<void, AssertionFailed> =>
   condition ? Effect.void : Effect.fail(new AssertionFailed({ message }));
 
 class WaitResult extends Data.Class<{
@@ -55,9 +43,7 @@ const waitFor = Effect.fn("NotebookSpike.wait")(function* (
   const complete = yield* pipe(
     events,
     Chunk.findFirst(Notebook.WaitEvent.$is("complete")),
-    Effect.fromOption(
-      () => new AssertionFailed({ message: "Wait did not complete" }),
-    ),
+    Effect.fromOption(() => new AssertionFailed({ message: "Wait did not complete" })),
   );
   const text = pipe(
     events,
@@ -77,9 +63,7 @@ const waitFor = Effect.fn("NotebookSpike.wait")(function* (
 
 const program = Effect.gen(function* () {
   const notebooks = yield* Notebook.Service;
-  const first = yield* notebooks.create(
-    new Notebook.CreateInput({ name: Option.some("first") }),
-  );
+  const first = yield* notebooks.create(new Notebook.CreateInput({ name: Option.some("first") }));
   yield* assert(first.status === "idle", "The created notebook was not idle");
   yield* assert(first.current, "The created notebook was not current");
 
@@ -108,14 +92,9 @@ notebookValue + 2;
       }),
     ),
   );
-  yield* assert(
-    busyFailure.message.includes("is busy"),
-    "A busy notebook accepted another cell",
-  );
+  yield* assert(busyFailure.message.includes("is busy"), "A busy notebook accepted another cell");
 
-  const second = yield* notebooks.create(
-    new Notebook.CreateInput({ name: Option.some("second") }),
-  );
+  const second = yield* notebooks.create(new Notebook.CreateInput({ name: Option.some("second") }));
   const limitFailure = yield* Effect.flip(
     notebooks.create(new Notebook.CreateInput({ name: Option.some("third") })),
   );
@@ -154,10 +133,7 @@ notebookValue + 2;
   );
   const persisted = yield* waitFor(notebooks, persistedCell, 5_000);
   const persistedValue = stripVTControlCharacters(persisted.text).trim();
-  yield* assert(
-    persistedValue.includes("43"),
-    "Notebook state did not persist between cells",
-  );
+  yield* assert(persistedValue.includes("43"), "Notebook state did not persist between cells");
 
   const interruptedCell = yield* notebooks.start(
     new Notebook.StartInput({
@@ -193,24 +169,15 @@ notebookValue + 2;
     "Stopping notebooks did not close them",
   );
 
-  const journal = readFileSync(
-    join(first.artifactPath, "notebook.jsonl"),
-    "utf8",
-  );
+  const journal = readFileSync(join(first.artifactPath, "notebook.jsonl"), "utf8");
   const sourceIndex = journal.indexOf('"cell_started"');
   const terminalIndex = journal.indexOf('"cell_completed"');
   const cellDirectory = join(first.artifactPath, "cells", firstCell);
   const outputs = readFileSync(join(cellDirectory, "outputs.jsonl"), "utf8");
   const streams = readFileSync(join(cellDirectory, "streams.log"), "utf8");
   yield* assert(sourceIndex >= 0, "The journal did not contain cell source");
-  yield* assert(
-    terminalIndex > sourceIndex,
-    "Terminal status was journaled before source",
-  );
-  yield* assert(
-    !journal.includes('"cell_output"'),
-    "Cell output remained in the notebook journal",
-  );
+  yield* assert(terminalIndex > sourceIndex, "Terminal status was journaled before source");
+  yield* assert(!journal.includes('"cell_output"'), "Cell output remained in the notebook journal");
   yield* assert(
     outputs.split("\n").every((line) => line === "" || JSON.parse(line)),
     "The output log was not strict JSONL",
@@ -236,9 +203,7 @@ const mainLayer = pipe(
 
 pipe(
   program,
-  Effect.ensuring(
-    Effect.sync(() => rmSync(artifactRoot, { force: true, recursive: true })),
-  ),
+  Effect.ensuring(Effect.sync(() => rmSync(artifactRoot, { force: true, recursive: true }))),
   Effect.provide(mainLayer),
   NodeRuntime.runMain,
 );

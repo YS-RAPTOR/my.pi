@@ -29,25 +29,19 @@ class CapturedExecution extends Data.Class<{
   readonly outputs: Chunk.Chunk<Jupyter.Output>;
 }> {}
 
-const assert = (
-  condition: boolean,
-  message: string,
-): Effect.Effect<void, AssertionFailed> =>
+const assert = (condition: boolean, message: string): Effect.Effect<void, AssertionFailed> =>
   condition ? Effect.void : Effect.fail(new AssertionFailed({ message }));
 
-const plainText = (
-  outputs: Chunk.Chunk<Jupyter.Output>,
-): Option.Option<string> =>
+const plainTexts = (outputs: Chunk.Chunk<Jupyter.Output>) =>
   pipe(
     outputs,
     Chunk.filter(Jupyter.Output.$is("display")),
-    Chunk.map((output) =>
-      Schema.decodeUnknownOption(PlainTextBundle)(output.data),
-    ),
+    Chunk.map((output) => Schema.decodeUnknownOption(PlainTextBundle)(output.data)),
     Chunk.filter(Option.isSome),
     Chunk.map((bundle) => bundle.value["text/plain"]),
-    Chunk.head,
   );
+
+const plainText = (outputs: Chunk.Chunk<Jupyter.Output>) => pipe(plainTexts(outputs), Chunk.head);
 
 const requirePlainText = Effect.fn("OrogenySpike.requirePlainText")(function* (
   outputs: Chunk.Chunk<Jupyter.Output>,
@@ -59,27 +53,18 @@ const requirePlainText = Effect.fn("OrogenySpike.requirePlainText")(function* (
   });
 });
 
-const capture = Effect.fn("OrogenySpike.capture")(function* (
-  execution: Jupyter.Execution,
-) {
+const capture = Effect.fn("OrogenySpike.capture")(function* (execution: Jupyter.Execution) {
   const { result, outputs } = yield* Effect.all(
     {
       result: execution.completion,
-      outputs: pipe(
-        execution.outputs,
-        Stream.runCollect,
-        Effect.map(Chunk.fromIterable),
-      ),
+      outputs: pipe(execution.outputs, Stream.runCollect, Effect.map(Chunk.fromIterable)),
     },
     { concurrency: "unbounded" },
   );
   return new CapturedExecution({ result, outputs });
 });
 
-const run = Effect.fn("OrogenySpike.run")(function* (
-  kernel: Jupyter.Handle,
-  code: string,
-) {
+const run = Effect.fn("OrogenySpike.run")(function* (kernel: Jupyter.Handle, code: string) {
   return yield* capture(yield* kernel.start(code));
 });
 
@@ -118,10 +103,7 @@ await new Promise((resolve) => setTimeout(resolve, 750));
         ),
     }),
   );
-  const completionState = yield* pipe(
-    Fiber.join(completion),
-    Effect.timeoutOption(0),
-  );
+  const completionState = yield* pipe(Fiber.join(completion), Effect.timeoutOption(0));
   yield* assert(
     Option.isNone(completionState),
     "The execution completed before its first output was observed",
@@ -135,23 +117,14 @@ await new Promise((resolve) => setTimeout(resolve, 750));
   );
   const incrementalResult = yield* Fiber.join(completion);
   yield* Fiber.join(drain);
-  yield* assert(
-    incrementalResult.status === "succeeded",
-    "The incremental execution failed",
-  );
+  yield* assert(incrementalResult.status === "succeeded", "The incremental execution failed");
   yield* Console.log("incremental output: observed before completion");
 
   const declaration = yield* run(kernel, "let x = 41");
-  yield* assert(
-    declaration.result.status === "succeeded",
-    "The state declaration failed",
-  );
+  yield* assert(declaration.result.status === "succeeded", "The state declaration failed");
 
   const persisted = yield* run(kernel, "x + 1");
-  yield* assert(
-    persisted.result.status === "succeeded",
-    "The persisted-state execution failed",
-  );
+  yield* assert(persisted.result.status === "succeeded", "The persisted-state execution failed");
   const persistedText = yield* requirePlainText(persisted.outputs);
   const persistedValue = stripVTControlCharacters(persistedText).trim();
   yield* assert(
@@ -160,10 +133,28 @@ await new Promise((resolve) => setTimeout(resolve, 750));
   );
   yield* Console.log(`persistent state: ${persistedValue}`);
 
-  const running = yield* pipe(
-    capture(yield* kernel.start("while (true) {}")),
-    Effect.forkChild,
+  const rapid = yield* run(
+    kernel,
+    `for (let index = 0; index < 100; index++) await Deno.jupyter.display({ "text/plain": \`rapid-\${index}\` }, { raw: true });`,
   );
+  const rapidValues = plainTexts(rapid.outputs);
+  yield* assert(
+    Chunk.size(rapidValues) === 100 &&
+      Chunk.reduce(rapidValues, true, (valid, value, index) => valid && value === `rapid-${index}`),
+    "Rapid output was lost or reordered",
+  );
+  const isolatedExecution = yield* run(
+    kernel,
+    `await Deno.jupyter.display({ "text/plain": "isolated" }, { raw: true });`,
+  );
+  const isolated = plainTexts(isolatedExecution.outputs);
+  yield* assert(
+    Chunk.size(isolated) === 1 && Option.contains(Chunk.head(isolated), "isolated"),
+    "Rapid output leaked into the following execution",
+  );
+  yield* Console.log("rapid output: 100/100 captured and isolated");
+
+  const running = yield* pipe(capture(yield* kernel.start("while (true) {}")), Effect.forkChild);
   yield* Effect.sleep(250);
   yield* kernel.interrupt;
   const interrupted = yield* pipe(
