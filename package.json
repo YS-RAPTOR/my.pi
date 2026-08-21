@@ -12,6 +12,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('node_modules', { force: true, recursive: true })\"",
     "check": "npm run typecheck && npm run lint",
+    "test": "npm --workspaces --if-present run test",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings extensions packages",
     "lint:fix": "oxlint --fix extensions packages",

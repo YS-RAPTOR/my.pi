@@ -11,17 +11,13 @@ import {
   Layer,
   Option,
   pipe,
-  Schema,
+  Stream,
 } from "effect";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 
 const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-spike-"));
-
-class PlainTextBundle extends Schema.Opaque<PlainTextBundle>()(
-  Schema.Struct({ "text/plain": Schema.String }),
-) {}
 
 class AssertionFailed extends Data.TaggedError("NotebookSpikeAssertionFailed")<{
   readonly message: string;
@@ -33,19 +29,51 @@ const assert = (
 ): Effect.Effect<void, AssertionFailed> =>
   condition ? Effect.void : Effect.fail(new AssertionFailed({ message }));
 
-const plainText = (
-  outputs: Chunk.Chunk<Jupyter.Output>,
-): Option.Option<string> =>
-  pipe(
-    outputs,
-    Chunk.filter(Jupyter.Output.$is("display")),
-    Chunk.map((output) =>
-      Schema.decodeUnknownOption(PlainTextBundle)(output.data),
+class WaitResult extends Data.Class<{
+  readonly status: Notebook.CellStatus;
+  readonly text: string;
+  readonly cursor: CellOutput.Cursor;
+  readonly hasMore: boolean;
+}> {}
+
+const waitFor = Effect.fn("NotebookSpike.wait")(function* (
+  notebooks: Notebook.Interface,
+  cellId: Notebook.CellId,
+  timeoutMillis: number,
+) {
+  const events = yield* pipe(
+    notebooks.wait(
+      new Notebook.WaitInput({
+        cellId,
+        cursor: Option.none(),
+        timeoutMillis,
+      }),
     ),
-    Chunk.filter(Option.isSome),
-    Chunk.map((bundle) => bundle.value["text/plain"]),
-    Chunk.head,
+    Stream.runCollect,
+    Effect.map(Chunk.fromIterable),
   );
+  const complete = yield* pipe(
+    events,
+    Chunk.findFirst(Notebook.WaitEvent.$is("complete")),
+    Effect.fromOption(
+      () => new AssertionFailed({ message: "Wait did not complete" }),
+    ),
+  );
+  const text = pipe(
+    events,
+    Chunk.filter(Notebook.WaitEvent.$is("content")),
+    Chunk.map((event) => event.value),
+    Chunk.filter(CellOutput.Content.$is("text")),
+    Chunk.map((content) => content.text),
+    Chunk.join(""),
+  );
+  return new WaitResult({
+    text,
+    status: complete.status,
+    cursor: complete.nextCursor,
+    hasMore: complete.hasMore,
+  });
+});
 
 const program = Effect.gen(function* () {
   const notebooks = yield* Notebook.Service;
@@ -66,9 +94,7 @@ notebookValue + 2;
 `,
     }),
   );
-  const running = yield* notebooks.wait(
-    new Notebook.WaitInput({ cellId: firstCell, timeoutMillis: 0 }),
-  );
+  const running = yield* waitFor(notebooks, firstCell, 0);
   yield* assert(
     running.status === "running",
     `Expected a running cell, received ${running.status}`,
@@ -103,33 +129,20 @@ notebookValue + 2;
       code: "6 * 7",
     }),
   );
-  const secondResult = yield* notebooks.wait(
-    new Notebook.WaitInput({
-      cellId: secondCell,
-      timeoutMillis: 5_000,
-    }),
-  );
+  const secondResult = yield* waitFor(notebooks, secondCell, 5_000);
   yield* assert(
     secondResult.status === "succeeded",
     "A cell in the second notebook did not run concurrently",
   );
 
-  const firstResult = yield* notebooks.wait(
-    new Notebook.WaitInput({
-      cellId: firstCell,
-      timeoutMillis: 5_000,
-    }),
-  );
+  const firstResult = yield* waitFor(notebooks, firstCell, 5_000);
   yield* assert(
     firstResult.status === "succeeded",
     `The first cell ended as ${firstResult.status}`,
   );
-  const firstValue = pipe(
-    plainText(firstResult.outputs),
-    Option.map((value) => stripVTControlCharacters(value).trim()),
-  );
+  const firstValue = stripVTControlCharacters(firstResult.text).trim();
   yield* assert(
-    Option.contains(firstValue, "42"),
+    firstValue.includes("42"),
     "The first notebook did not retain its final expression",
   );
 
@@ -139,18 +152,10 @@ notebookValue + 2;
       code: "notebookValue + 3",
     }),
   );
-  const persisted = yield* notebooks.wait(
-    new Notebook.WaitInput({
-      cellId: persistedCell,
-      timeoutMillis: 5_000,
-    }),
-  );
-  const persistedValue = pipe(
-    plainText(persisted.outputs),
-    Option.map((value) => stripVTControlCharacters(value).trim()),
-  );
+  const persisted = yield* waitFor(notebooks, persistedCell, 5_000);
+  const persistedValue = stripVTControlCharacters(persisted.text).trim();
   yield* assert(
-    Option.contains(persistedValue, "43"),
+    persistedValue.includes("43"),
     "Notebook state did not persist between cells",
   );
 
@@ -162,12 +167,7 @@ notebookValue + 2;
   );
   yield* Effect.sleep(250);
   yield* notebooks.stopCell(interruptedCell);
-  const interrupted = yield* notebooks.wait(
-    new Notebook.WaitInput({
-      cellId: interruptedCell,
-      timeoutMillis: 0,
-    }),
-  );
+  const interrupted = yield* waitFor(notebooks, interruptedCell, 0);
   yield* assert(
     interrupted.status === "interrupted",
     `Expected interrupted, received ${interrupted.status}`,
@@ -179,12 +179,7 @@ notebookValue + 2;
       code: "1 + 1",
     }),
   );
-  const recovered = yield* notebooks.wait(
-    new Notebook.WaitInput({
-      cellId: recoveredCell,
-      timeoutMillis: 5_000,
-    }),
-  );
+  const recovered = yield* waitFor(notebooks, recoveredCell, 5_000);
   yield* assert(
     recovered.status === "succeeded",
     "The notebook did not recover after interruption",

@@ -1,3 +1,4 @@
+import * as Pi from "@earendil-works/pi-coding-agent";
 import {
   Cause,
   Chunk,
@@ -13,6 +14,8 @@ import {
   Option,
   Path,
   pipe,
+  PubSub,
+  Queue,
   Ref,
   Schema,
   Scope,
@@ -49,6 +52,7 @@ export class StartInput extends Data.Class<{
 
 export class WaitInput extends Data.Class<{
   readonly cellId: CellId;
+  readonly cursor: Option.Option<CellOutput.Cursor>;
   readonly timeoutMillis: number;
 }> {}
 
@@ -64,15 +68,18 @@ export class NotebookSummary extends Data.Class<{
   readonly closeReason: Option.Option<NotebookCloseReason>;
 }> {}
 
-export class CellSnapshot extends Data.Class<{
-  readonly id: CellId;
-  readonly notebookId: NotebookId;
-  readonly status: "running" | "succeeded" | "failed" | "interrupted";
-  readonly outputs: Chunk.Chunk<Jupyter.Output>;
-  readonly startedAt: string;
-  readonly completedAt: Option.Option<string>;
-  readonly message: Option.Option<string>;
-}> {}
+export type CellStatus = "running" | "succeeded" | "failed" | "interrupted";
+
+export type WaitEvent = Data.TaggedEnum<{
+  content: { readonly value: CellOutput.Content };
+  complete: {
+    readonly status: CellStatus;
+    readonly nextCursor: CellOutput.Cursor;
+    readonly hasMore: boolean;
+  };
+}>;
+
+export const WaitEvent = Data.taggedEnum<WaitEvent>();
 
 export class OperationFailed extends Data.TaggedError("Notebook")<{
   readonly operation: string;
@@ -84,7 +91,7 @@ export type Interface = Readonly<{
     input?: CreateInput,
   ) => Effect.Effect<NotebookSummary, OperationFailed>;
   start: (input: StartInput) => Effect.Effect<CellId, OperationFailed>;
-  wait: (input: WaitInput) => Effect.Effect<CellSnapshot, OperationFailed>;
+  wait: (input: WaitInput) => Stream.Stream<WaitEvent, OperationFailed>;
   stopCell: (id: CellId) => Effect.Effect<void, OperationFailed>;
   stopNotebook: (id: NotebookId) => Effect.Effect<void, OperationFailed>;
   list: Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
@@ -102,7 +109,7 @@ class NotebookState extends Data.Class<{
 }> {}
 
 class Terminal extends Data.Class<{
-  readonly status: "succeeded" | "failed" | "interrupted";
+  readonly status: Exclude<CellStatus, "running">;
   readonly completedAt: string;
   readonly message: Option.Option<string>;
 }> {}
@@ -137,7 +144,6 @@ class Cell extends Data.Class<{
   readonly notebookId: NotebookId;
   readonly startedAt: string;
   readonly output: CellOutput.Handle;
-  readonly outputs: Ref.Ref<Chunk.Chunk<Jupyter.Output>>;
   readonly interruptRequested: Ref.Ref<boolean>;
   readonly terminal: Deferred.Deferred<Terminal>;
   readonly completion: Semaphore.Semaphore;
@@ -280,31 +286,6 @@ export const layer = (config: Config) =>
           artifactPath: notebook.artifact.directory,
           createdAt: notebook.createdAt,
           ...state,
-        });
-      });
-
-      const snapshot = Effect.fn("Notebook.snapshot")(function* (cell: Cell) {
-        const terminal = (yield* Deferred.isDone(cell.terminal))
-          ? Option.some(yield* Deferred.await(cell.terminal))
-          : Option.none<Terminal>();
-        const details = Option.match(terminal, {
-          onNone: () => ({
-            status: "running" as const,
-            completedAt: Option.none<string>(),
-            message: Option.none<string>(),
-          }),
-          onSome: (value) => ({
-            status: value.status,
-            completedAt: Option.some(value.completedAt),
-            message: value.message,
-          }),
-        });
-        return new CellSnapshot({
-          id: cell.id,
-          notebookId: cell.notebookId,
-          outputs: yield* Ref.get(cell.outputs),
-          startedAt: cell.startedAt,
-          ...details,
         });
       });
 
@@ -461,11 +442,6 @@ export const layer = (config: Config) =>
           cell.output.append(output),
           Effect.mapError(
             (cause) => new JournalFailed({ message: cause.message }),
-          ),
-          Effect.andThen(
-            Ref.update(cell.outputs, (outputs) =>
-              Chunk.append(outputs, output),
-            ),
           ),
         );
 
@@ -665,7 +641,6 @@ export const layer = (config: Config) =>
                 notebookId: notebook.id,
                 startedAt,
                 output,
-                outputs: yield* Ref.make(Chunk.empty<Jupyter.Output>()),
                 interruptRequested: yield* Ref.make(false),
                 terminal: yield* Deferred.make<Terminal>(),
                 completion: yield* Semaphore.make(1),
@@ -728,22 +703,78 @@ export const layer = (config: Config) =>
         },
       );
 
-      const wait: Interface["wait"] = Effect.fn("Notebook.wait")(
-        function* (input) {
-          const cell = yield* getCell(input.cellId);
-          if (
-            !(yield* Deferred.isDone(cell.terminal)) &&
-            input.timeoutMillis > 0
-          )
-            yield* pipe(
-              Deferred.await(cell.terminal),
-              Effect.timeoutOption(
-                Math.min(input.timeoutMillis, config.maxWaitMillis),
-              ),
+      const wait: Interface["wait"] = (input) =>
+        Stream.callback<WaitEvent, OperationFailed>((queue) =>
+          Effect.gen(function* () {
+            const cell = yield* getCell(input.cellId);
+            const updates = yield* PubSub.subscribe(cell.output.updates);
+            const deadline =
+              (yield* Clock.currentTimeMillis) +
+              Math.max(0, Math.min(input.timeoutMillis, config.maxWaitMillis));
+
+            const consume = (
+              cursor: CellOutput.Cursor,
+              bytes: number,
+              lines: number,
+            ): Effect.Effect<void, OperationFailed> =>
+              Effect.gen(function* () {
+                const sealed = yield* Deferred.isDone(cell.terminal);
+                const page = yield* pipe(
+                  cell.output.read(
+                    new CellOutput.ReadInput({
+                      cursor,
+                      sealed,
+                      maxBytes: Pi.DEFAULT_MAX_BYTES - bytes,
+                      maxLines: Pi.DEFAULT_MAX_LINES - lines,
+                    }),
+                  ),
+                  Effect.mapError((cause) =>
+                    runtimeFailure("read cell output", cause.message),
+                  ),
+                );
+                yield* Effect.forEach(
+                  page.content,
+                  (value) => Queue.offer(queue, WaitEvent.content({ value })),
+                  { discard: true },
+                );
+                const nextBytes = bytes + page.bytes;
+                const nextLines = lines + page.lines;
+                const now = yield* Clock.currentTimeMillis;
+                if (
+                  page.boundary !== "exhausted" ||
+                  sealed ||
+                  now >= deadline
+                ) {
+                  const status: CellStatus = (yield* Deferred.isDone(
+                    cell.terminal,
+                  ))
+                    ? (yield* Deferred.await(cell.terminal)).status
+                    : "running";
+                  yield* Queue.offer(
+                    queue,
+                    WaitEvent.complete({
+                      status,
+                      nextCursor: page.cursor,
+                      hasMore: page.hasMore,
+                    }),
+                  );
+                  return yield* pipe(Queue.end(queue), Effect.asVoid);
+                }
+                yield* Effect.raceAllFirst([
+                  pipe(PubSub.take(updates), Effect.asVoid),
+                  pipe(Deferred.await(cell.terminal), Effect.asVoid),
+                  Effect.sleep(deadline - now),
+                ]);
+                return yield* consume(page.cursor, nextBytes, nextLines);
+              });
+
+            yield* consume(
+              Option.getOrElse(input.cursor, CellOutput.Cursor.start),
+              0,
+              0,
             );
-          return yield* snapshot(cell);
-        },
-      );
+          }),
+        );
 
       const interrupt = Effect.fn("Notebook.interrupt")(function* (
         cell: Cell,
