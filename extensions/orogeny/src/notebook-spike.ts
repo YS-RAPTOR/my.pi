@@ -172,7 +172,7 @@ notebookValue + 2;
   const journal = readFileSync(join(first.artifactPath, "notebook.jsonl"), "utf8");
   const sourceIndex = journal.indexOf('"cell_started"');
   const terminalIndex = journal.indexOf('"cell_completed"');
-  const cellDirectory = join(first.artifactPath, "cells", firstCell);
+  const cellDirectory = join(first.artifactPath, firstCell);
   const outputs = readFileSync(join(cellDirectory, "outputs.jsonl"), "utf8");
   const streams = readFileSync(join(cellDirectory, "streams.log"), "utf8");
   yield* assert(sourceIndex >= 0, "The journal did not contain cell source");

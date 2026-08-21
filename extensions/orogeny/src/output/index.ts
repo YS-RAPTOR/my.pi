@@ -57,7 +57,7 @@ export class Handle extends Data.Class<{
 }> {}
 
 export type Interface = Readonly<{
-  open: (directory: string) => Effect.Effect<Handle, OperationFailed>;
+  open: (directory: string, mode?: "create" | "existing") => Effect.Effect<Handle, OperationFailed>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()("orogeny/CellOutput") {}
@@ -277,24 +277,28 @@ export const layer = Layer.effect(
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
 
-    const open: Interface["open"] = Effect.fn("CellOutput.open")(function* (directory) {
+    const open: Interface["open"] = Effect.fn("CellOutput.open")(function* (
+      directory,
+      mode = "create",
+    ) {
       const outputPath = paths.join(directory, "outputs.jsonl");
       const streamPath = paths.join(directory, "streams.log");
 
-      yield* pipe(
-        files.makeDirectory(paths.dirname(directory), PARENT),
-        Effect.andThen(files.makeDirectory(directory, DIRECTORY)),
-        Effect.andThen(
-          Effect.forEach(
-            [outputPath, streamPath],
-            (path) => files.writeFileString(path, "", CREATE_FILE),
-            {
-              discard: true,
-            },
+      if (mode === "create")
+        yield* pipe(
+          files.makeDirectory(paths.dirname(directory), PARENT),
+          Effect.andThen(files.makeDirectory(directory, DIRECTORY)),
+          Effect.andThen(
+            Effect.forEach(
+              [outputPath, streamPath],
+              (path) => files.writeFileString(path, "", CREATE_FILE),
+              {
+                discard: true,
+              },
+            ),
           ),
-        ),
-        mapFailed("create cell output"),
-      );
+          mapFailed("create cell output"),
+        );
 
       const state = yield* SynchronizedRef.make(
         new State({
@@ -339,7 +343,7 @@ export const layer = Layer.effect(
         return id;
       });
 
-      const append: Handle["append"] = (output: Jupyter.Output) =>
+      const write: Handle["append"] = (output: Jupyter.Output) =>
         pipe(
           state,
           SynchronizedRef.updateEffect((current) =>
@@ -418,6 +422,11 @@ export const layer = Layer.effect(
           Effect.andThen(PubSub.publish(updates, undefined)),
           Effect.asVoid,
         );
+
+      const append: Handle["append"] =
+        mode === "create"
+          ? write
+          : () => Effect.fail(failed("append cell output", "Cannot append to existing output"));
 
       const project = (
         snapshot: Snapshot,

@@ -1,5 +1,6 @@
 import * as Pi from "@earendil-works/pi-coding-agent";
 import {
+  Array as Arr,
   Cause,
   Chunk,
   Clock,
@@ -26,13 +27,6 @@ import {
 import { Jupyter } from "#o/jupyter";
 import { CellOutput } from "#o/output";
 import { CellId, NotebookId } from "./types.ts";
-
-export type NotebookCloseReason =
-  | "manual"
-  | "crashed"
-  | "startup_failed"
-  | "storage_failure"
-  | "unresponsive";
 
 export class Config extends Data.Class<{
   readonly artifactRoot: string;
@@ -65,7 +59,6 @@ export class NotebookSummary extends Data.Class<{
   readonly activeCellId: Option.Option<CellId>;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly closeReason: Option.Option<NotebookCloseReason>;
 }> {}
 
 export type CellStatus = "running" | "succeeded" | "failed" | "interrupted";
@@ -100,7 +93,6 @@ export class Service extends Context.Service<Service, Interface>()("orogeny/Note
 class NotebookState extends Data.Class<{
   readonly status: "idle" | "busy" | "closed";
   readonly activeCellId: Option.Option<CellId>;
-  readonly closeReason: Option.Option<NotebookCloseReason>;
   readonly updatedAt: string;
 }> {}
 
@@ -113,6 +105,37 @@ class Terminal extends Data.Class<{
 class JournalFailed extends Data.TaggedError("NotebookJournalOperationFailed")<{
   readonly message: string;
 }> {}
+
+const JournalFields = {
+  sequence: Schema.Natural,
+  timestamp: Schema.String,
+};
+
+class NotebookCreatedRecord extends Schema.Class<NotebookCreatedRecord>("NotebookCreatedRecord")({
+  ...JournalFields,
+  event: Schema.Literal("notebook_created"),
+  name: Schema.NullOr(Schema.String),
+}) {}
+
+class CellStartedRecord extends Schema.Class<CellStartedRecord>("CellStartedRecord")({
+  ...JournalFields,
+  event: Schema.Literal("cell_started"),
+  cell_id: CellId,
+  code: Schema.String,
+}) {}
+
+class CellCompletedRecord extends Schema.Class<CellCompletedRecord>("CellCompletedRecord")({
+  ...JournalFields,
+  event: Schema.Literal("cell_completed"),
+  cell_id: CellId,
+  status: Schema.Literals(["succeeded", "failed", "interrupted"]),
+  message: Schema.NullOr(Schema.String),
+}) {}
+
+const NotebookJournal = Schema.TupleWithRest(
+  Schema.Tuple([Schema.fromJsonString(NotebookCreatedRecord)]),
+  [Schema.fromJsonString(Schema.Union([CellStartedRecord, CellCompletedRecord]))],
+);
 
 class Resources extends Data.Class<{
   readonly kernel: Jupyter.Handle;
@@ -138,7 +161,6 @@ class Notebook extends Data.Class<{
 class Cell extends Data.Class<{
   readonly id: CellId;
   readonly notebookId: NotebookId;
-  readonly startedAt: string;
   readonly output: CellOutput.Handle;
   readonly interruptRequested: Ref.Ref<boolean>;
   readonly terminal: Deferred.Deferred<Terminal>;
@@ -281,7 +303,6 @@ export const layer = (config: Config) =>
             ? new NotebookState({
                 status: "idle",
                 activeCellId: Option.none(),
-                closeReason: Option.none(),
                 updatedAt,
               })
             : state,
@@ -327,24 +348,17 @@ export const layer = (config: Config) =>
             ),
         });
 
-      const transitionClosed = <E, R>(
-        notebook: Notebook,
-        reason: NotebookCloseReason,
-        before: Effect.Effect<void, E, R>,
-        after: Effect.Effect<void, E, R> = Effect.void,
-      ): Effect.Effect<void, E, R> =>
+      const close = (notebook: Notebook, after: Effect.Effect<void> = Effect.void) =>
         notebook.admission.withPermit(
           Effect.gen(function* () {
             if ((yield* Ref.get(notebook.status)).status === "closed") return yield* after;
             yield* pipe(
               Effect.gen(function* () {
-                yield* before;
                 yield* Ref.set(
                   notebook.status,
                   new NotebookState({
                     status: "closed",
                     activeCellId: Option.none(),
-                    closeReason: Option.some(reason),
                     updatedAt: yield* now,
                   }),
                 );
@@ -359,22 +373,13 @@ export const layer = (config: Config) =>
           }),
         );
 
-      const close = (notebook: Notebook, reason: NotebookCloseReason) =>
-        transitionClosed(
-          notebook,
-          reason,
-          append(notebook.artifact, { event: "notebook_closed", reason }),
-        );
-
       const storageFailure = Effect.fn("Notebook.storageFailure")(function* (
         notebook: Notebook,
         cell: Cell,
         cause: JournalFailed,
       ) {
-        yield* transitionClosed(
+        yield* close(
           notebook,
-          "storage_failure",
-          Effect.void,
           complete(
             notebook,
             cell,
@@ -415,7 +420,7 @@ export const layer = (config: Config) =>
           ),
           recoverStorage(notebook, cell),
         );
-        yield* pipe(close(notebook, "crashed"), recoverStorage(notebook, cell));
+        yield* close(notebook);
       });
 
       const appendOutput = (cell: Cell, output: Jupyter.Output) =>
@@ -503,6 +508,100 @@ export const layer = (config: Config) =>
         });
       });
 
+      const discover = Effect.fn("Notebook.discover")(function* () {
+        const entries = yield* pipe(
+          files.makeDirectory(config.artifactRoot, { recursive: true, mode: 0o700 }),
+          Effect.andThen(files.readDirectory(config.artifactRoot)),
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
+          Effect.mapError((cause) => runtimeFailure("discover notebooks", cause)),
+        );
+        const ids = Arr.filterMap(entries, (entry) =>
+          Schema.decodeUnknownResult(NotebookId)(entry),
+        );
+        const discovered = yield* Effect.forEach(ids, (id) =>
+          pipe(
+            Effect.gen(function* () {
+              const directory = paths.join(config.artifactRoot, id);
+              const path = paths.join(directory, "notebook.jsonl");
+              const [created, ...events] = yield* pipe(
+                files.readFileString(path),
+                Effect.flatMap((source) =>
+                  Schema.decodeUnknownEffect(NotebookJournal)(source.trimEnd().split("\n")),
+                ),
+              );
+              const terminals = Arr.reduce(
+                events,
+                HashMap.empty<CellId, Terminal>(),
+                (cells, event) => {
+                  const terminal = new Terminal({
+                    status: event.event === "cell_started" ? "interrupted" : event.status,
+                    completedAt: event.timestamp,
+                    message:
+                      event.event === "cell_started"
+                        ? Option.none()
+                        : Option.fromNullOr(event.message),
+                  });
+                  return event.event === "cell_started"
+                    ? HashMap.set(cells, event.cell_id, terminal)
+                    : HashMap.modify(cells, event.cell_id, () => terminal);
+                },
+              );
+              const cells = yield* Effect.forEach(
+                HashMap.entries(terminals),
+                ([cellId, terminal]) =>
+                  Effect.gen(function* () {
+                    const completed = yield* Deferred.make<Terminal>();
+                    yield* Deferred.succeed(completed, terminal);
+                    return new Cell({
+                      id: cellId,
+                      notebookId: id,
+                      output: yield* outputs.open(paths.join(directory, cellId), "existing"),
+                      interruptRequested: yield* Ref.make(false),
+                      terminal: completed,
+                      completion: yield* Semaphore.make(1),
+                    });
+                  }),
+              );
+              const notebook = yield* makeNotebook(
+                id,
+                Option.fromNullOr(created.name),
+                new Artifact({
+                  directory,
+                  path,
+                  sequence: yield* SynchronizedRef.make(events.length + 1),
+                }),
+                created.timestamp,
+                new NotebookState({
+                  status: "closed",
+                  activeCellId: Option.none(),
+                  updatedAt: events.at(-1)?.timestamp ?? created.timestamp,
+                }),
+                Option.none(),
+              );
+              return [notebook, cells] as const;
+            }),
+            Effect.map(Option.some),
+            Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(Option.none())),
+            Effect.mapError((cause) => runtimeFailure("discover notebook", cause)),
+          ),
+        );
+        const restored = Arr.getSomes(discovered);
+        const cells = Arr.flatMap(restored, ([, cells]) => cells);
+        yield* Ref.set(
+          registry,
+          new Registry({
+            notebooks: HashMap.fromIterable(
+              Arr.map(restored, ([notebook]) => [notebook.id, notebook]),
+            ),
+            cells: HashMap.fromIterable(Arr.map(cells, (cell) => [cell.id, cell])),
+            current: Option.none(),
+            live: 0,
+          }),
+        );
+      });
+
+      yield* discover();
+
       const create: Interface["create"] = Effect.fn("Notebook.create")(function* (
         input = new CreateInput({ name: Option.none() }),
       ) {
@@ -531,7 +630,6 @@ export const layer = (config: Config) =>
                 new NotebookState({
                   status: "closed",
                   activeCellId: Option.none(),
-                  closeReason: Option.some("startup_failed"),
                   updatedAt: yield* now,
                 }),
                 Option.none(),
@@ -543,13 +641,6 @@ export const layer = (config: Config) =>
                     ...value,
                     notebooks: HashMap.set(value.notebooks, id, notebook),
                   }),
-              );
-              yield* pipe(
-                append(artifact, {
-                  event: "notebook_closed",
-                  reason: "startup_failed",
-                }),
-                Effect.ignore,
               );
               yield* Scope.close(scope, Exit.void);
               return yield* runtimeFailure(
@@ -565,7 +656,6 @@ export const layer = (config: Config) =>
               new NotebookState({
                 status: "idle",
                 activeCellId: Option.none(),
-                closeReason: Option.none(),
                 updatedAt: createdAt,
               }),
               Option.some(new Resources({ kernel: opened.value, scope })),
@@ -600,13 +690,12 @@ export const layer = (config: Config) =>
             const id = cellId(`cell_${crypto.randomUUID()}`);
             const startedAt = yield* now;
             const output = yield* pipe(
-              outputs.open(paths.join(notebook.artifact.directory, "cells", id)),
+              outputs.open(paths.join(notebook.artifact.directory, id)),
               Effect.mapError((cause) => runtimeFailure("create cell output", cause)),
             );
             const cell = new Cell({
               id,
               notebookId: notebook.id,
-              startedAt,
               output,
               interruptRequested: yield* Ref.make(false),
               terminal: yield* Deferred.make<Terminal>(),
@@ -617,7 +706,6 @@ export const layer = (config: Config) =>
               new NotebookState({
                 status: "busy",
                 activeCellId: Option.some(id),
-                closeReason: Option.none(),
                 updatedAt: startedAt,
               }),
             );
@@ -760,7 +848,7 @@ export const layer = (config: Config) =>
           ),
           recoverStorage(notebook, cell),
         );
-        yield* pipe(close(notebook, "unresponsive"), recoverStorage(notebook, cell));
+        yield* close(notebook);
       });
 
       const stopNotebook: Interface["stopNotebook"] = Effect.fn("Notebook.stopNotebook")(
@@ -788,10 +876,7 @@ export const layer = (config: Config) =>
                 recoverStorage(notebook, cell),
               );
           }
-          yield* pipe(
-            close(notebook, "manual"),
-            Effect.mapError((cause) => runtimeFailure("close notebook journal", cause)),
-          );
+          yield* close(notebook);
         },
       );
 

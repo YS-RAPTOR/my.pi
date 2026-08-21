@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { NodeServices } from "@effect/platform-node";
 import * as Pi from "@earendil-works/pi-coding-agent";
@@ -15,6 +24,7 @@ import {
   Layer,
   Option,
   pipe,
+  Schema,
   Stream,
   String as Str,
 } from "effect";
@@ -25,9 +35,8 @@ import { CellOutput } from "#o/output";
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
-const fixture = async <A, E>(body: (notebooks: Notebook.Interface) => Effect.Effect<A, E>) => {
-  const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-test-"));
-  const layer = pipe(
+const runtimeLayer = (artifactRoot: string) =>
+  pipe(
     Notebook.layer(
       new Notebook.Config({
         artifactRoot,
@@ -41,13 +50,16 @@ const fixture = async <A, E>(body: (notebooks: Notebook.Interface) => Effect.Eff
     Layer.provide(NodeServices.layer),
   );
 
+const fixture = async <A, E>(body: (notebooks: Notebook.Interface) => Effect.Effect<A, E>) => {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-test-"));
+
   try {
     return await Effect.runPromise(
       pipe(
         Effect.gen(function* () {
           return yield* body(yield* Notebook.Service);
         }),
-        Effect.provide(layer),
+        Effect.provide(runtimeLayer(artifactRoot)),
       ),
     );
   } finally {
@@ -97,6 +109,214 @@ const awaitTerminal = Effect.fnUntraced(function* (
   const result = completion(yield* collectWait(notebooks, cellId, cursor, 5_000));
   if (result.status !== "running") return;
   return yield* awaitTerminal(notebooks, cellId, Option.some(result.nextCursor));
+});
+
+test("discovery restores the existing notebook and cell objects", { timeout: 20_000 }, async () => {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-discovery-test-"));
+
+  try {
+    const stored = await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const notebooks = yield* Notebook.Service;
+          const notebook = yield* notebooks.create();
+          const cell = yield* notebooks.start(
+            new Notebook.StartInput({
+              notebookId: Option.some(notebook.id),
+              code: 'console.log("discovered output")',
+            }),
+          );
+          yield* awaitTerminal(notebooks, cell);
+          yield* notebooks.stopNotebook(notebook.id);
+          return { notebook, cell };
+        }),
+        Effect.provide(runtimeLayer(artifactRoot)),
+      ),
+    );
+
+    await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const notebooks = yield* Notebook.Service;
+          const listed = yield* notebooks.list;
+          const notebook = pipe(
+            listed,
+            Chunk.findFirst((value) => value.id === stored.notebook.id),
+          );
+          assert.equal(Option.isSome(notebook), true);
+          if (Option.isNone(notebook)) return;
+          assert.equal(notebook.value.status, "closed");
+
+          const events = yield* collectWait(notebooks, stored.cell, Option.none(), 5_000);
+          assert.equal(completion(events).status, "succeeded");
+          assert.match(text(events), /discovered output/);
+          yield* notebooks.stopCell(stored.cell);
+          yield* notebooks.stopNotebook(stored.notebook.id);
+        }),
+        Effect.provide(runtimeLayer(artifactRoot)),
+      ),
+    );
+  } finally {
+    rmSync(artifactRoot, { force: true, recursive: true });
+  }
+});
+
+test("discovery defaults unfinished cells without inspecting cell files", async () => {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-recovery-test-"));
+  const notebookId = Schema.decodeUnknownSync(Notebook.NotebookId)(`nb_${crypto.randomUUID()}`);
+  const cellId = Schema.decodeUnknownSync(Notebook.CellId)(`cell_${crypto.randomUUID()}`);
+  const directory = join(artifactRoot, notebookId);
+  const journal = join(directory, "notebook.jsonl");
+  const timestamp = new Date().toISOString();
+
+  try {
+    mkdirSync(directory);
+    writeFileSync(
+      journal,
+      [
+        { sequence: 0, timestamp, event: "notebook_created", name: null },
+        { sequence: 1, timestamp, event: "cell_started", cell_id: cellId, code: "await never" },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+    );
+
+    await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const notebooks = yield* Notebook.Service;
+          const listed = yield* notebooks.list;
+          assert.equal(Chunk.size(listed), 1);
+          assert.equal(Chunk.headUnsafe(listed).status, "closed");
+          yield* notebooks.stopCell(cellId);
+        }),
+        Effect.provide(runtimeLayer(artifactRoot)),
+      ),
+    );
+
+    assert.doesNotMatch(readFileSync(journal, "utf8"), /cell_completed/);
+  } finally {
+    rmSync(artifactRoot, { force: true, recursive: true });
+  }
+});
+
+test(
+  "discovery reads inherited output through its session-local symlink",
+  { timeout: 20_000 },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "orogeny-inherited-test-"));
+    const ownerRoot = join(root, "owner", "notebooks");
+    const childRoot = join(root, "child", "notebooks");
+
+    try {
+      const stored = await Effect.runPromise(
+        pipe(
+          Effect.gen(function* () {
+            const notebooks = yield* Notebook.Service;
+            const notebook = yield* notebooks.create();
+            const cell = yield* notebooks.start(
+              new Notebook.StartInput({
+                notebookId: Option.some(notebook.id),
+                code: 'console.log("inherited output")',
+              }),
+            );
+            yield* awaitTerminal(notebooks, cell);
+            yield* notebooks.stopNotebook(notebook.id);
+            return { notebook, cell };
+          }),
+          Effect.provide(runtimeLayer(ownerRoot)),
+        ),
+      );
+      const canonicalPath = stored.notebook.artifactPath;
+      const inheritedPath = join(childRoot, stored.notebook.id);
+      mkdirSync(childRoot, { recursive: true });
+      symlinkSync(relative(childRoot, canonicalPath), inheritedPath, "dir");
+      const journalPath = join(canonicalPath, "notebook.jsonl");
+      const journal = readFileSync(journalPath, "utf8");
+
+      await Effect.runPromise(
+        pipe(
+          Effect.gen(function* () {
+            const notebooks = yield* Notebook.Service;
+            const listed = yield* notebooks.list;
+            assert.equal(Chunk.size(listed), 1);
+            const inherited = Chunk.headUnsafe(listed);
+            assert.equal(inherited.id, stored.notebook.id);
+            assert.equal(inherited.status, "closed");
+            assert.equal(inherited.artifactPath, inheritedPath);
+
+            const events = yield* collectWait(notebooks, stored.cell, Option.none(), 5_000);
+            assert.equal(completion(events).status, "succeeded");
+            assert.match(text(events), /inherited output/);
+
+            const failure = yield* Effect.flip(
+              notebooks.start(
+                new Notebook.StartInput({
+                  notebookId: Option.some(stored.notebook.id),
+                  code: "1 + 1",
+                }),
+              ),
+            );
+            assert.equal(failure.operation, "use notebook kernel");
+            yield* notebooks.stopCell(stored.cell);
+            yield* notebooks.stopNotebook(stored.notebook.id);
+          }),
+          Effect.provide(runtimeLayer(childRoot)),
+        ),
+      );
+
+      assert.equal(lstatSync(inheritedPath).isSymbolicLink(), true);
+      assert.equal(realpathSync(inheritedPath), realpathSync(canonicalPath));
+      assert.equal(readFileSync(journalPath, "utf8"), journal);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+);
+
+test("discovery ignores dangling notebook links without hiding valid entries", async () => {
+  const root = mkdtempSync(join(tmpdir(), "orogeny-dangling-test-"));
+  const canonicalRoot = join(root, "canonical");
+  const childRoot = join(root, "child", "notebooks");
+  const validId = Schema.decodeUnknownSync(Notebook.NotebookId)(`nb_${crypto.randomUUID()}`);
+  const missingId = Schema.decodeUnknownSync(Notebook.NotebookId)(`nb_${crypto.randomUUID()}`);
+  const canonicalPath = join(canonicalRoot, validId);
+  const timestamp = new Date().toISOString();
+
+  try {
+    mkdirSync(canonicalPath, { recursive: true });
+    mkdirSync(childRoot, { recursive: true });
+    writeFileSync(
+      join(canonicalPath, "notebook.jsonl"),
+      `${JSON.stringify({
+        sequence: 0,
+        timestamp,
+        event: "notebook_created",
+        name: null,
+      })}\n`,
+    );
+    symlinkSync(relative(childRoot, canonicalPath), join(childRoot, validId), "dir");
+    symlinkSync(
+      relative(childRoot, join(canonicalRoot, missingId)),
+      join(childRoot, missingId),
+      "dir",
+    );
+
+    await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const notebooks = yield* Notebook.Service;
+          const listed = yield* notebooks.list;
+          assert.deepEqual(Chunk.toReadonlyArray(Chunk.map(listed, (value) => value.id)), [
+            validId,
+          ]);
+        }),
+        Effect.provide(runtimeLayer(childRoot)),
+      ),
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test(
