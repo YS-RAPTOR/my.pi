@@ -4,6 +4,7 @@
   "type": "module",
   "imports": {
     "#o/config": "./src/config.ts",
+    "#o/prelude": "./src/prelude.ts",
     "#o/session": "./src/session.ts",
     "#o/*": "./src/*/index.ts"
   },
@@ -17,6 +18,7 @@
     "@effect/platform-node": "4.0.0-beta.102",
     "@ys-raptor/pi-effect": "0.0.0",
     "effect": "4.0.0-beta.102",
+    "highlight.js": "10.7.3",
     "mime-types": "3.0.2",
     "zeromq": "6.5.0"
   },

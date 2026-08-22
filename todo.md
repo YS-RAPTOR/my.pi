@@ -1,34 +1,36 @@
-- matt-pocock-skills
+- [x] contextual skills
 
-- nix run and stuff like that skill
+- [x] matt-pocock-skills
 
-- nix software installation skill
+- [x] nix run and stuff like that skill
 
-- enhanced-code-search
+- [x] nix software installation skill
 
-- project dev environment
-- port collision avoidance
+- [x] reference management? Maybe skill/system prompt?/cli?
 
-- mcp-integration
+- [x] enhanced-code-search
 
-- remote-development
+- [x] mcp-integration
 
-- reference management? Maybe skill/system prompt?/cli?
+- [x] unified-exec
 
-- unified-exec
+- [x] agent-heartbeats
+- [x] agent-aware-sleep
 
-- agent-heartbeats
-- agent-aware-sleep
+- [x] pi status history
 
-- image-tools
-- pi status history
+- [ ] background-computer-use
+- [ ] browser-use
+- [ ] impeccable-design (look into this to see if we can simplify by using browser-use)
 
-- editor-agent-handoff
+- [ ] document-message-annotation
+- [ ] review flow?
 
-- document-message-annotation
+- [ ] project dev environment
+- [ ] port collision avoidance
 
-- browser-use
-- background-computer-use
-- impeccable-design (look into this to see if we can simplify by using browser-use)
+- [ ] remote-development
 
-- review flow?
+- [ ] editor-agent-handoff
+
+- [ ] image-tools

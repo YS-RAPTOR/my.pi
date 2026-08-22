@@ -30,6 +30,31 @@ const text = (captured: Captured) =>
   );
 
 test(
+  "kernel initialization is silent and does not consume execution history",
+  { timeout: 20_000 },
+  async () => {
+    const layer = pipe(Jupyter.layer, Layer.provide(NodeServices.layer));
+    await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const kernel = yield* (yield* Jupyter.Service).open;
+          yield* kernel.initialize("globalThis.__orogenyPreludeTest = 41;");
+          const captured = yield* capture(kernel, "globalThis.__orogenyPreludeTest + 1");
+          assert.equal(captured.result.status, "succeeded");
+          const result = pipe(captured.outputs, Chunk.findFirst(Jupyter.Output.$is("display")));
+          assert.equal(Option.isSome(result), true);
+          if (Option.isNone(result)) return;
+          assert.match(String(result.value.data["text/plain"]), /42/);
+          assert.equal(Option.getOrUndefined(result.value.executionCount), 1);
+        }),
+        Effect.scoped,
+        Effect.provide(layer),
+      ),
+    );
+  },
+);
+
+test(
   "the output fence captures rapid output and prevents cross-cell attribution",
   { timeout: 20_000 },
   async () => {

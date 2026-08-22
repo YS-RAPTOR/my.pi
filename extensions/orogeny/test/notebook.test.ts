@@ -31,6 +31,7 @@ import {
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
+import { Prelude } from "#o/prelude";
 
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -47,6 +48,7 @@ const runtimeLayer = (artifactRoot: string) =>
     ),
     Layer.provide(Jupyter.layer),
     Layer.provide(CellOutput.layer),
+    Layer.provide(Prelude.layer),
     Layer.provide(NodeServices.layer),
   );
 
@@ -111,6 +113,69 @@ const awaitTerminal = Effect.fnUntraced(function* (
   return yield* awaitTerminal(notebooks, cellId, Option.some(result.nextCursor));
 });
 
+test("create initializes the generated language prelude", { timeout: 20_000 }, () =>
+  fixture((notebooks) =>
+    Effect.gen(function* () {
+      const notebook = yield* notebooks.create();
+      const cell = yield* notebooks.start(
+        new Notebook.StartInput({
+          notebookId: Option.some(notebook.id),
+          code: "console.log($ts`const answer: number = 42;`)",
+        }),
+      );
+      yield* awaitTerminal(notebooks, cell);
+      const events = yield* collectWait(notebooks, cell, Option.none(), 5_000);
+      assert.equal(completion(events).status, "succeeded");
+      assert.match(text(events), /const answer: number = 42;\n$/);
+    }),
+  ),
+);
+
+test("list filters names by case-insensitive containment and status exactly", () =>
+  fixture((notebooks) =>
+    Effect.gen(function* () {
+      const primary = yield* notebooks.create(
+        new Notebook.CreateInput({ name: Option.some("Analysis Primary") }),
+      );
+      yield* notebooks.stopNotebook(primary.id);
+      const archive = yield* notebooks.create(
+        new Notebook.CreateInput({ name: Option.some("analysis archive") }),
+      );
+      yield* notebooks.stopNotebook(archive.id);
+      const notes = yield* notebooks.create(
+        new Notebook.CreateInput({ name: Option.some("notes") }),
+      );
+
+      const byName = yield* notebooks.list(
+        new Notebook.ListInput({ name: Option.some("ANALY"), status: Option.none() }),
+      );
+      assert.deepEqual(
+        new Set(Chunk.toReadonlyArray(Chunk.map(byName, (notebook) => notebook.id))),
+        new Set([primary.id, archive.id]),
+      );
+
+      const combined = yield* notebooks.list(
+        new Notebook.ListInput({
+          name: Option.some("primary"),
+          status: Option.some("closed"),
+        }),
+      );
+      assert.deepEqual(
+        Chunk.toReadonlyArray(Chunk.map(combined, (notebook) => notebook.id)),
+        [primary.id],
+      );
+
+      const idle = yield* notebooks.list(
+        new Notebook.ListInput({ name: Option.none(), status: Option.some("idle") }),
+      );
+      assert.deepEqual(Chunk.toReadonlyArray(Chunk.map(idle, (notebook) => notebook.id)), [
+        notes.id,
+      ]);
+      assert.equal(Chunk.size(yield* notebooks.list()), 3);
+    }),
+  ),
+);
+
 test("discovery restores the existing notebook and cell objects", { timeout: 20_000 }, async () => {
   const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-discovery-test-"));
 
@@ -138,7 +203,7 @@ test("discovery restores the existing notebook and cell objects", { timeout: 20_
       pipe(
         Effect.gen(function* () {
           const notebooks = yield* Notebook.Service;
-          const listed = yield* notebooks.list;
+          const listed = yield* notebooks.list();
           const notebook = pipe(
             listed,
             Chunk.findFirst((value) => value.id === stored.notebook.id),
@@ -185,7 +250,7 @@ test("discovery defaults unfinished cells without inspecting cell files", async 
       pipe(
         Effect.gen(function* () {
           const notebooks = yield* Notebook.Service;
-          const listed = yield* notebooks.list;
+          const listed = yield* notebooks.list();
           assert.equal(Chunk.size(listed), 1);
           assert.equal(Chunk.headUnsafe(listed).status, "closed");
           yield* notebooks.stopCell(cellId);
@@ -238,7 +303,7 @@ test(
         pipe(
           Effect.gen(function* () {
             const notebooks = yield* Notebook.Service;
-            const listed = yield* notebooks.list;
+            const listed = yield* notebooks.list();
             assert.equal(Chunk.size(listed), 1);
             const inherited = Chunk.headUnsafe(listed);
             assert.equal(inherited.id, stored.notebook.id);
@@ -306,7 +371,7 @@ test("discovery ignores dangling notebook links without hiding valid entries", a
       pipe(
         Effect.gen(function* () {
           const notebooks = yield* Notebook.Service;
-          const listed = yield* notebooks.list;
+          const listed = yield* notebooks.list();
           assert.deepEqual(Chunk.toReadonlyArray(Chunk.map(listed, (value) => value.id)), [
             validId,
           ]);

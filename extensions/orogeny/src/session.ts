@@ -20,6 +20,7 @@ import { Config } from "#o/config";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
+import { Prelude } from "#o/prelude";
 
 export class OperationFailed extends Data.TaggedError("OrogenySession")<{
   readonly operation: string;
@@ -67,6 +68,7 @@ const notebookLayer = (artifactRoot: string, config: Config.Value) =>
     ),
     Layer.provide(Jupyter.layer),
     Layer.provide(CellOutput.layer),
+    Layer.provide(Prelude.layer),
     Layer.provide(NodeServices.layer),
   );
 

@@ -7,6 +7,7 @@ import { Chunk, Console, Data, Effect, Layer, Option, pipe, Stream } from "effec
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
+import { Prelude } from "#o/prelude";
 
 const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-spike-"));
 
@@ -163,7 +164,7 @@ notebookValue + 2;
 
   yield* notebooks.stopNotebook(first.id);
   yield* notebooks.stopNotebook(second.id);
-  const listed = yield* notebooks.list;
+  const listed = yield* notebooks.list();
   yield* assert(
     Chunk.every(listed, (notebook) => notebook.status === "closed"),
     "Stopping notebooks did not close them",
@@ -198,6 +199,7 @@ const mainLayer = pipe(
   Notebook.layer(runtimeConfig),
   Layer.provide(Jupyter.layer),
   Layer.provide(CellOutput.layer),
+  Layer.provide(Prelude.layer),
   Layer.provide(NodeServices.layer),
 );
 

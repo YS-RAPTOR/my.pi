@@ -20,6 +20,7 @@ import {
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
+import { Prelude } from "#o/prelude";
 
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -368,6 +369,7 @@ const mainLayer = pipe(
   ),
   Layer.provide(Jupyter.layer),
   Layer.provide(CellOutput.layer),
+  Layer.provide(Prelude.layer),
   Layer.provide(NodeServices.layer),
 );
 

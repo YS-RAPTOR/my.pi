@@ -26,6 +26,7 @@ import {
 } from "effect";
 import { Jupyter } from "#o/jupyter";
 import { CellOutput } from "#o/output";
+import { Prelude } from "#o/prelude";
 import { CellId, NotebookId } from "./types.ts";
 
 export class Config extends Data.Class<{
@@ -48,6 +49,11 @@ export class WaitInput extends Data.Class<{
   readonly cellId: CellId;
   readonly cursor: Option.Option<CellOutput.Cursor>;
   readonly timeoutMillis: number;
+}> {}
+
+export class ListInput extends Data.Class<{
+  readonly name: Option.Option<string>;
+  readonly status: Option.Option<"idle" | "busy" | "closed">;
 }> {}
 
 export class NotebookSummary extends Data.Class<{
@@ -85,7 +91,7 @@ export type Interface = Readonly<{
   wait: (input: WaitInput) => Stream.Stream<WaitEvent, OperationFailed>;
   stopCell: (id: CellId) => Effect.Effect<void, OperationFailed>;
   stopNotebook: (id: NotebookId) => Effect.Effect<void, OperationFailed>;
-  list: Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
+  list: (input?: ListInput) => Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()("orogeny/Notebook.Runtime") {}
@@ -196,6 +202,8 @@ export const layer = (config: Config) =>
       const rootScope = yield* Effect.scope;
       const kernels = yield* Jupyter.Service;
       const outputs = yield* CellOutput.Service;
+      const prelude = yield* Prelude.Service;
+      const preludeSource = yield* prelude.get;
       const files = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
 
@@ -620,7 +628,15 @@ export const layer = (config: Config) =>
               Effect.mapError((cause) => runtimeFailure("create notebook artifact", cause)),
             );
             const scope = yield* Scope.fork(rootScope);
-            const opened = yield* pipe(kernels.open, Scope.provide(scope), Effect.exit);
+            const opened = yield* pipe(
+              Effect.gen(function* () {
+                const kernel = yield* kernels.open;
+                yield* kernel.initialize(preludeSource);
+                return kernel;
+              }),
+              Scope.provide(scope),
+              Effect.exit,
+            );
             if (Exit.isFailure(opened)) {
               const notebook = yield* makeNotebook(
                 id,
@@ -880,11 +896,33 @@ export const layer = (config: Config) =>
         },
       );
 
-      const list: Interface["list"] = pipe(
-        Ref.get(registry),
-        Effect.flatMap((state) => Effect.forEach(HashMap.values(state.notebooks), summary)),
-        Effect.map(Chunk.fromIterable),
-      );
+      const list: Interface["list"] = (
+        input = new ListInput({ name: Option.none(), status: Option.none() }),
+      ) => {
+        const normalizedName = Option.map(input.name, (name) => name.toLowerCase());
+        return pipe(
+          Ref.get(registry),
+          Effect.flatMap((state) =>
+            Effect.forEach(HashMap.values(state.notebooks), summary),
+          ),
+          Effect.map(Chunk.fromIterable),
+          Effect.map(
+            Chunk.filter((notebook) =>
+              Option.match(normalizedName, {
+                onNone: () => true,
+                onSome: (name) =>
+                  Option.exists(notebook.name, (candidate) =>
+                    candidate.toLowerCase().includes(name),
+                  ),
+              }) &&
+              Option.match(input.status, {
+                onNone: () => true,
+                onSome: (status) => notebook.status === status,
+              }),
+            ),
+          ),
+        );
+      };
 
       yield* Effect.addFinalizer(() =>
         pipe(

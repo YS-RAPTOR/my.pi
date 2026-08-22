@@ -82,6 +82,7 @@ export class Execution extends Data.Class<{
 }> {}
 
 export class Handle extends Data.Class<{
+  readonly initialize: (code: string) => Effect.Effect<void, OperationFailed>;
   readonly start: (code: string) => Effect.Effect<Execution, OperationFailed>;
   readonly interrupt: Effect.Effect<void, OperationFailed>;
   readonly shutdown: Effect.Effect<void, OperationFailed>;
@@ -608,6 +609,39 @@ export const layer = Layer.effect(
         shellLock.withPermit,
       );
 
+      const initialize: Handle["initialize"] = Effect.fn("Jupyter.Kernel.initialize")(
+        function* (code) {
+          return yield* shellLock.withPermit(
+            Effect.gen(function* () {
+              if (yield* Ref.get(closed))
+                return yield* failed("initialize Deno kernel", "Kernel is closed");
+              const response = yield* requestReply(
+                shell,
+                "execute_request",
+                "execute_reply",
+                {
+                  code,
+                  silent: true,
+                  store_history: false,
+                  user_expressions: {},
+                  allow_stdin: false,
+                  stop_on_error: true,
+                },
+              );
+              const result = yield* pipe(
+                Schema.decodeUnknownEffect(Reply)(response.content),
+                mapFailed("validate Deno kernel initialization"),
+              );
+              if (result.status === "error")
+                return yield* failed(
+                  "initialize Deno kernel",
+                  result.evalue ?? "Prelude execution failed",
+                );
+            }),
+          );
+        },
+      );
+
       const start: Handle["start"] = Effect.fn("Jupyter.Kernel.start")(function* (code) {
         const output = yield* Queue.unbounded<Output, OperationFailed | Cause.Done>();
         const started = yield* Deferred.make<void, OperationFailed>();
@@ -723,7 +757,7 @@ export const layer = Layer.effect(
         }),
       );
 
-      return new Handle({ start, interrupt, shutdown });
+      return new Handle({ initialize, start, interrupt, shutdown });
     });
 
     return Service.of({ open });

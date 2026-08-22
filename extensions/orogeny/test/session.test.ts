@@ -69,7 +69,7 @@ test("persisted sessions place notebooks in their sidecar and reload them closed
 
         yield* session.stop;
         yield* session.start(event("reload"), Option.some(file));
-        const restored = yield* (yield* session.notebook).list;
+        const restored = yield* (yield* session.notebook).list();
         assert.equal(Chunk.size(restored), 1);
         assert.equal(Chunk.headUnsafe(restored).id, created.id);
         assert.equal(Chunk.headUnsafe(restored).status, "closed");
@@ -103,7 +103,7 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
         symlinkSync("missing", join(sidecar(parentFile), danglingId));
 
         yield* session.start(event("fork", parentFile), Option.some(childFile));
-        const inherited = yield* (yield* session.notebook).list;
+        const inherited = yield* (yield* session.notebook).list();
         assert.deepEqual(Chunk.toReadonlyArray(Chunk.map(inherited, (value) => value.id)), [
           first.id,
         ]);
@@ -116,7 +116,7 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
         yield* session.stop;
 
         yield* session.start(event("fork", parentFile), Option.some(childFile));
-        assert.equal(Chunk.size(yield* (yield* session.notebook).list), 1);
+        assert.equal(Chunk.size(yield* (yield* session.notebook).list()), 1);
         yield* session.stop;
 
         yield* session.start(event("resume"), Option.some(parentFile));
@@ -124,7 +124,7 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
         yield* session.stop;
 
         yield* session.start(event("reload"), Option.some(childFile));
-        const snapshot = yield* (yield* session.notebook).list;
+        const snapshot = yield* (yield* session.notebook).list();
         assert.equal(
           Chunk.some(snapshot, (value) => value.id === first.id),
           true,
@@ -143,7 +143,7 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
         yield* session.stop;
 
         yield* session.start(event("new", parentFile), Option.some(newFile));
-        assert.equal(Chunk.isEmpty(yield* (yield* session.notebook).list), true);
+        assert.equal(Chunk.isEmpty(yield* (yield* session.notebook).list()), true);
       }),
     );
   } finally {
