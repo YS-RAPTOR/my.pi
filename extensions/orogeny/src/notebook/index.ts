@@ -37,7 +37,7 @@ export class Config extends Data.Class<{
 }> {}
 
 export class CreateInput extends Data.Class<{
-  readonly name: Option.Option<string>;
+  readonly name: string;
 }> {}
 
 export class StartInput extends Data.Class<{
@@ -58,7 +58,7 @@ export class ListInput extends Data.Class<{
 
 export class NotebookSummary extends Data.Class<{
   readonly id: NotebookId;
-  readonly name: Option.Option<string>;
+  readonly name: string;
   readonly status: "idle" | "busy" | "closed";
   readonly current: boolean;
   readonly artifactPath: string;
@@ -67,7 +67,19 @@ export class NotebookSummary extends Data.Class<{
   readonly updatedAt: string;
 }> {}
 
+export type NotebookStatus = "idle" | "busy" | "closed";
 export type CellStatus = "running" | "succeeded" | "failed" | "interrupted";
+export type StoppedCellStatus = Exclude<CellStatus, "running"> | "killed";
+
+export class StopCellResult extends Data.Class<{
+  readonly before: CellStatus;
+  readonly after: StoppedCellStatus;
+}> {}
+
+export class StopNotebookResult extends Data.Class<{
+  readonly before: NotebookStatus;
+  readonly after: "closed";
+}> {}
 
 export type WaitEvent = Data.TaggedEnum<{
   content: { readonly value: CellOutput.Content };
@@ -86,11 +98,11 @@ export class OperationFailed extends Data.TaggedError("Notebook")<{
 }> {}
 
 export type Interface = Readonly<{
-  create: (input?: CreateInput) => Effect.Effect<NotebookSummary, OperationFailed>;
+  create: (input: CreateInput) => Effect.Effect<NotebookSummary, OperationFailed>;
   start: (input: StartInput) => Effect.Effect<CellId, OperationFailed>;
   wait: (input: WaitInput) => Stream.Stream<WaitEvent, OperationFailed>;
-  stopCell: (id: CellId) => Effect.Effect<void, OperationFailed>;
-  stopNotebook: (id: NotebookId) => Effect.Effect<void, OperationFailed>;
+  stopCell: (id: CellId) => Effect.Effect<StopCellResult, OperationFailed>;
+  stopNotebook: (id: NotebookId) => Effect.Effect<StopNotebookResult, OperationFailed>;
   list: (input?: ListInput) => Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
 }>;
 
@@ -120,7 +132,7 @@ const JournalFields = {
 class NotebookCreatedRecord extends Schema.Class<NotebookCreatedRecord>("NotebookCreatedRecord")({
   ...JournalFields,
   event: Schema.Literal("notebook_created"),
-  name: Schema.NullOr(Schema.String),
+  name: Schema.String,
 }) {}
 
 class CellStartedRecord extends Schema.Class<CellStartedRecord>("CellStartedRecord")({
@@ -156,7 +168,7 @@ class Artifact extends Data.Class<{
 
 class Notebook extends Data.Class<{
   readonly id: NotebookId;
-  readonly name: Option.Option<string>;
+  readonly name: string;
   readonly artifact: Artifact;
   readonly createdAt: string;
   readonly status: Ref.Ref<NotebookState>;
@@ -241,9 +253,15 @@ export const layer = (config: Config) =>
           ),
         );
 
+      const removeArtifact = (directory: string) =>
+        pipe(
+          files.remove(directory, { recursive: true, force: true }),
+          Effect.ignore,
+        );
+
       const createArtifact = Effect.fn("Notebook.artifact")(function* (
         id: NotebookId,
-        name: Option.Option<string>,
+        name: string,
       ) {
         const directory = paths.join(config.artifactRoot, id);
         const path = paths.join(directory, "notebook.jsonl");
@@ -252,20 +270,31 @@ export const layer = (config: Config) =>
             recursive: true,
             mode: 0o700,
           }),
-          Effect.andThen(files.makeDirectory(directory, { mode: 0o700 })),
-          Effect.andThen(files.writeFileString(path, "", { flag: "wx", mode: 0o600 })),
           journalError,
         );
-        const artifact = new Artifact({
-          directory,
-          path,
-          sequence: yield* SynchronizedRef.make(0),
-        });
-        yield* append(artifact, {
-          event: "notebook_created",
-          name: Option.getOrNull(name),
-        });
-        return artifact;
+        yield* pipe(
+          files.makeDirectory(directory, { mode: 0o700 }),
+          journalError,
+        );
+        return yield* pipe(
+          Effect.gen(function* () {
+            yield* pipe(
+              files.writeFileString(path, "", { flag: "wx", mode: 0o600 }),
+              journalError,
+            );
+            const artifact = new Artifact({
+              directory,
+              path,
+              sequence: yield* SynchronizedRef.make(0),
+            });
+            yield* append(artifact, {
+              event: "notebook_created",
+              name,
+            });
+            return artifact;
+          }),
+          Effect.onError(() => removeArtifact(directory)),
+        );
       });
 
       const getNotebook = (id: NotebookId) =>
@@ -499,7 +528,7 @@ export const layer = (config: Config) =>
 
       const makeNotebook = Effect.fn("Notebook.make")(function* (
         id: NotebookId,
-        name: Option.Option<string>,
+        name: string,
         artifact: Artifact,
         createdAt: string,
         state: NotebookState,
@@ -572,7 +601,7 @@ export const layer = (config: Config) =>
               );
               const notebook = yield* makeNotebook(
                 id,
-                Option.fromNullOr(created.name),
+                created.name,
                 new Artifact({
                   directory,
                   path,
@@ -610,9 +639,7 @@ export const layer = (config: Config) =>
 
       yield* discover();
 
-      const create: Interface["create"] = Effect.fn("Notebook.create")(function* (
-        input = new CreateInput({ name: Option.none() }),
-      ) {
+      const create: Interface["create"] = Effect.fn("Notebook.create")(function* (input) {
         return yield* creation.withPermit(
           Effect.gen(function* () {
             const state = yield* Ref.get(registry);
@@ -638,30 +665,11 @@ export const layer = (config: Config) =>
               Effect.exit,
             );
             if (Exit.isFailure(opened)) {
-              const notebook = yield* makeNotebook(
-                id,
-                input.name,
-                artifact,
-                createdAt,
-                new NotebookState({
-                  status: "closed",
-                  activeCellId: Option.none(),
-                  updatedAt: yield* now,
-                }),
-                Option.none(),
-              );
-              yield* Ref.update(
-                registry,
-                (value) =>
-                  new Registry({
-                    ...value,
-                    notebooks: HashMap.set(value.notebooks, id, notebook),
-                  }),
-              );
               yield* Scope.close(scope, Exit.void);
+              yield* removeArtifact(artifact.directory);
               return yield* runtimeFailure(
                 "start notebook kernel",
-                `${Cause.pretty(opened.cause)}\nNotebook: ${id}\nArtifact: ${artifact.directory}`,
+                Cause.pretty(opened.cause),
               );
             }
             const notebook = yield* makeNotebook(
@@ -836,22 +844,27 @@ export const layer = (config: Config) =>
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
-        return (
-          requested &&
-          Option.isSome(
-            yield* pipe(
-              Deferred.await(cell.terminal),
-              Effect.timeoutOption(config.interruptGraceMillis),
-            ),
-          )
+        if (!requested) return Option.none<Terminal>();
+        return yield* pipe(
+          Deferred.await(cell.terminal),
+          Effect.timeoutOption(config.interruptGraceMillis),
         );
       });
 
       const stopCell: Interface["stopCell"] = Effect.fn("Notebook.stopCell")(function* (id) {
         const cell = yield* getCell(id);
-        if (yield* Deferred.isDone(cell.terminal)) return;
+        if (yield* Deferred.isDone(cell.terminal)) {
+          const terminal = yield* Deferred.await(cell.terminal);
+          return new StopCellResult({ before: terminal.status, after: terminal.status });
+        }
         const notebook = yield* getNotebook(cell.notebookId);
-        if (yield* interrupt(cell, yield* resources(notebook))) return;
+        const terminal = yield* interrupt(cell, yield* resources(notebook));
+        if (Option.isSome(terminal))
+          return new StopCellResult({ before: "running", after: terminal.value.status });
+        if (yield* Deferred.isDone(cell.terminal)) {
+          const completed = yield* Deferred.await(cell.terminal);
+          return new StopCellResult({ before: "running", after: completed.status });
+        }
         yield* pipe(
           finish(
             notebook,
@@ -865,20 +878,22 @@ export const layer = (config: Config) =>
           recoverStorage(notebook, cell),
         );
         yield* close(notebook);
+        return new StopCellResult({ before: "running", after: "killed" });
       });
 
       const stopNotebook: Interface["stopNotebook"] = Effect.fn("Notebook.stopNotebook")(
         function* (id) {
           const notebook = yield* getNotebook(id);
           const state = yield* Ref.get(notebook.status);
-          if (state.status === "closed") return;
+          if (state.status === "closed")
+            return new StopNotebookResult({ before: "closed", after: "closed" });
           const live = yield* resources(notebook);
           if (state.status === "busy") {
             const active = yield* Effect.fromOption(() =>
               runtimeFailure("stop notebook", "Busy notebook has no active cell"),
             )(state.activeCellId);
             const cell = yield* getCell(active);
-            if (!(yield* Deferred.isDone(cell.terminal)) && !(yield* interrupt(cell, live)))
+            if (!(yield* Deferred.isDone(cell.terminal)) && Option.isNone(yield* interrupt(cell, live)))
               yield* pipe(
                 finish(
                   notebook,
@@ -893,6 +908,7 @@ export const layer = (config: Config) =>
               );
           }
           yield* close(notebook);
+          return new StopNotebookResult({ before: state.status, after: "closed" });
         },
       );
 
@@ -910,10 +926,7 @@ export const layer = (config: Config) =>
             Chunk.filter((notebook) =>
               Option.match(normalizedName, {
                 onNone: () => true,
-                onSome: (name) =>
-                  Option.exists(notebook.name, (candidate) =>
-                    candidate.toLowerCase().includes(name),
-                  ),
+                onSome: (name) => notebook.name.toLowerCase().includes(name),
               }) &&
               Option.match(input.status, {
                 onNone: () => true,

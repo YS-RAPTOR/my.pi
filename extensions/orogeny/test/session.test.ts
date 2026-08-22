@@ -17,20 +17,19 @@ import { Chunk, Effect, Layer, Option, pipe, Schema } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
 import { Config } from "#o/config";
 import { Notebook } from "#o/notebook";
+import { Prelude } from "#o/prelude";
 import { Session } from "#o/session";
+import { Syntax } from "#o/syntax";
 
+const configLayer = Layer.succeed(
+  Config.Service,
+  Config.Service.of(Schema.decodeUnknownSync(Config.schema)({})),
+);
+const syntaxLayer = pipe(Syntax.layer, Layer.provide(configLayer));
+const preludeLayer = pipe(Prelude.layer, Layer.provide(syntaxLayer));
 const runtimeLayer = pipe(
   Session.layer,
-  Layer.provide(
-    Layer.succeed(
-      Config.Service,
-      Config.Service.of({
-        "max-live-notebooks": 5,
-        "max-wait-ms": 5 * 60 * 1_000,
-        "interrupt-grace-ms": 5_000,
-      }),
-    ),
-  ),
+  Layer.provide(Layer.merge(configLayer, preludeLayer)),
   Layer.provide(Pi.Hooks.Barriers.layer),
   Layer.provide(NodeServices.layer),
 );
@@ -64,7 +63,9 @@ test("persisted sessions place notebooks in their sidecar and reload them closed
         const session = yield* Session.Service;
         yield* session.start(event("startup"), Option.some(file));
         const notebooks = yield* session.notebook;
-        const created = yield* notebooks.create();
+        const created = yield* notebooks.create(
+        new Notebook.CreateInput({ name: "session" }),
+      );
         assert.equal(created.artifactPath, join(sidecar(file), created.id));
 
         yield* session.stop;
@@ -93,7 +94,9 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
       Effect.gen(function* () {
         const session = yield* Session.Service;
         yield* session.start(event("startup"), Option.some(parentFile));
-        const first = yield* (yield* session.notebook).create();
+        const first = yield* (yield* session.notebook).create(
+          new Notebook.CreateInput({ name: "first" }),
+        );
         const canonical = first.artifactPath;
         yield* session.stop;
 
@@ -120,7 +123,9 @@ test("fork and clone snapshots use flattened relative links", { timeout: 20_000 
         yield* session.stop;
 
         yield* session.start(event("resume"), Option.some(parentFile));
-        const second = yield* (yield* session.notebook).create();
+        const second = yield* (yield* session.notebook).create(
+          new Notebook.CreateInput({ name: "second" }),
+        );
         yield* session.stop;
 
         yield* session.start(event("reload"), Option.some(childFile));
@@ -161,7 +166,9 @@ test("fork inheritance never overwrites a conflicting child entry", async () => 
       Effect.gen(function* () {
         const session = yield* Session.Service;
         yield* session.start(event("startup"), Option.some(parentFile));
-        const notebook = yield* (yield* session.notebook).create();
+        const notebook = yield* (yield* session.notebook).create(
+          new Notebook.CreateInput({ name: "conflict" }),
+        );
         yield* session.stop;
 
         const conflict = join(sidecar(childFile), notebook.id);
@@ -184,7 +191,9 @@ test("ephemeral session storage is removed when its scope closes", async () => {
     Effect.gen(function* () {
       const session = yield* Session.Service;
       yield* session.start(event("startup"), Option.none());
-      const notebook = yield* (yield* session.notebook).create();
+      const notebook = yield* (yield* session.notebook).create(
+        new Notebook.CreateInput({ name: "ephemeral" }),
+      );
       temporary = dirname(notebook.artifactPath);
       assert.equal(existsSync(temporary), true);
       yield* session.stop;

@@ -1,113 +1,19 @@
-import hljs from "highlight.js";
-import {
-  Array as Arr,
-  Context,
-  Data,
-  Effect,
-  HashMap,
-  HashSet,
-  Layer,
-  Option,
-  Order,
-  pipe,
-  Result,
-} from "effect";
+import { Array as Arr, Context, Effect, HashMap, Layer, Order, pipe } from "effect";
+import { Syntax, languageTags } from "#o/syntax";
 
 export const CODE_MIME = "application/vnd.orogeny.code+json";
-
-type HighlightLanguage = NonNullable<ReturnType<typeof hljs.getLanguage>>;
-
-class Language extends Data.Class<{
-  readonly name: string;
-  readonly definition: HighlightLanguage;
-}> {}
 
 export type Interface = Readonly<{
   readonly get: Effect.Effect<string>;
   readonly languages: HashMap.HashMap<string, string>;
 }>;
 
-export class Service extends Context.Service<Service, Interface>()(
-  "orogeny/Prelude",
-) {}
+export class Service extends Context.Service<Service, Interface>()("orogeny/Prelude") {}
 
-const validTag = /^\$[$A-Z_a-z0-9]+$/;
-const validContinuation = /^[$A-Z_a-z0-9]$/;
 const tagOrder = pipe(
   Order.String,
   Order.mapInput(([tag]: readonly [string, string]) => tag),
 );
-
-const fallbackTag = (language: string) =>
-  `$${pipe(
-    Arr.fromIterable(language),
-    Arr.map((character) =>
-      validContinuation.test(character)
-        ? character
-        : `_u${character.codePointAt(0)?.toString(16) ?? "0"}_`,
-    ),
-    Arr.join(""),
-  )}`;
-
-const discoverLanguages = () => {
-  const names = pipe(hljs.listLanguages(), Arr.sort(Order.String));
-  const definitions = pipe(
-    names,
-    Arr.filterMap((name) => {
-      const definition = hljs.getLanguage(name);
-      return definition === undefined
-        ? Result.failVoid
-        : Result.succeed(new Language({ name, definition }));
-    }),
-  );
-
-  const ownerOf = (definition: HighlightLanguage) =>
-    pipe(
-      definitions,
-      Arr.findFirst((language) => language.definition === definition),
-      Option.map((language) => language.name),
-    );
-
-  const candidates = pipe(
-    definitions,
-    Arr.flatMap((language) =>
-      pipe(
-        [language.name, ...(language.definition.aliases ?? [])],
-        Arr.filterMap((alias) => {
-          const name = alias.toLowerCase();
-          const tag = `$${name}`;
-          return validTag.test(tag)
-            ? Result.succeed([tag, name] as const)
-            : Result.failVoid;
-        }),
-      ),
-    ),
-  );
-
-  const discovered = pipe(
-    candidates,
-    Arr.reduce(HashMap.empty<string, string>(), (languages, [tag, name]) =>
-      pipe(
-        Option.fromUndefinedOr(hljs.getLanguage(name)),
-        Option.flatMap(ownerOf),
-        Option.match({
-          onNone: () => languages,
-          onSome: (owner) => HashMap.set(languages, tag, owner),
-        }),
-      ),
-    ),
-  );
-
-  const represented = HashSet.fromIterable(HashMap.values(discovered));
-  return pipe(
-    names,
-    Arr.reduce(discovered, (languages, name) =>
-      HashSet.has(represented, name)
-        ? languages
-        : HashMap.set(languages, fallbackTag(name), name),
-    ),
-  );
-};
 
 const preludeSource = (languages: HashMap.HashMap<string, string>) => {
   const entries = pipe(HashMap.entries(languages), Arr.fromIterable, Arr.sort(tagOrder));
@@ -148,9 +54,8 @@ ${values}
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const languages = yield* Effect.sync(discoverLanguages);
-    const source = preludeSource(languages);
-    const get: Interface["get"] = Effect.succeed(source);
+    const languages = languageTags((yield* Syntax.Service).languages);
+    const get: Interface["get"] = Effect.succeed(preludeSource(languages));
     return Service.of({ get, languages });
   }),
 );

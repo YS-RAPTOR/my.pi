@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Chunk, Console, Data, Effect, Layer, Option, pipe, Stream } from "effect";
+import { Config } from "#o/config";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 import { Prelude } from "#o/prelude";
+import { Syntax } from "#o/syntax";
 
 const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-notebook-spike-"));
 
@@ -64,7 +66,7 @@ const waitFor = Effect.fn("NotebookSpike.wait")(function* (
 
 const program = Effect.gen(function* () {
   const notebooks = yield* Notebook.Service;
-  const first = yield* notebooks.create(new Notebook.CreateInput({ name: Option.some("first") }));
+  const first = yield* notebooks.create(new Notebook.CreateInput({ name: "first" }));
   yield* assert(first.status === "idle", "The created notebook was not idle");
   yield* assert(first.current, "The created notebook was not current");
 
@@ -95,9 +97,9 @@ notebookValue + 2;
   );
   yield* assert(busyFailure.message.includes("is busy"), "A busy notebook accepted another cell");
 
-  const second = yield* notebooks.create(new Notebook.CreateInput({ name: Option.some("second") }));
+  const second = yield* notebooks.create(new Notebook.CreateInput({ name: "second" }));
   const limitFailure = yield* Effect.flip(
-    notebooks.create(new Notebook.CreateInput({ name: Option.some("third") })),
+    notebooks.create(new Notebook.CreateInput({ name: "third" })),
   );
   yield* assert(
     limitFailure.message.includes("live notebook limit"),
@@ -200,6 +202,8 @@ const mainLayer = pipe(
   Layer.provide(Jupyter.layer),
   Layer.provide(CellOutput.layer),
   Layer.provide(Prelude.layer),
+  Layer.provide(Syntax.layer),
+  Layer.provide(Config.layer),
   Layer.provide(NodeServices.layer),
 );
 

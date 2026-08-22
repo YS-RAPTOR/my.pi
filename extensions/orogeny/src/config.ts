@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 
@@ -6,10 +8,20 @@ const positiveInteger = (fallback: number) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
+const cacheDirectory = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "orogeny");
+
 export const schema = Schema.Struct({
   "max-live-notebooks": positiveInteger(5),
   "max-wait-ms": positiveInteger(5 * 60 * 1_000),
   "interrupt-grace-ms": positiveInteger(5_000),
+  "tree-sitter": Schema.Struct({
+    "cache-directory": Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed(cacheDirectory)),
+    ),
+    languages: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed(["typescript"])),
+    ),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 
 export type Value = typeof schema.Type;

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -28,10 +29,19 @@ import {
   Stream,
   String as Str,
 } from "effect";
+import { Config } from "#o/config";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 import { Prelude } from "#o/prelude";
+import { Syntax } from "#o/syntax";
+
+const configLayer = Layer.succeed(
+  Config.Service,
+  Config.Service.of(Schema.decodeUnknownSync(Config.schema)({})),
+);
+const syntaxLayer = pipe(Syntax.layer, Layer.provide(configLayer));
+const preludeLayer = pipe(Prelude.layer, Layer.provide(syntaxLayer));
 
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -48,7 +58,7 @@ const runtimeLayer = (artifactRoot: string) =>
     ),
     Layer.provide(Jupyter.layer),
     Layer.provide(CellOutput.layer),
-    Layer.provide(Prelude.layer),
+    Layer.provide(preludeLayer),
     Layer.provide(NodeServices.layer),
   );
 
@@ -116,7 +126,9 @@ const awaitTerminal = Effect.fnUntraced(function* (
 test("create initializes the generated language prelude", { timeout: 20_000 }, () =>
   fixture((notebooks) =>
     Effect.gen(function* () {
-      const notebook = yield* notebooks.create();
+      const notebook = yield* notebooks.create(
+        new Notebook.CreateInput({ name: "prelude" }),
+      );
       const cell = yield* notebooks.start(
         new Notebook.StartInput({
           notebookId: Option.some(notebook.id),
@@ -131,19 +143,69 @@ test("create initializes the generated language prelude", { timeout: 20_000 }, (
   ),
 );
 
+test("failed kernel startup rolls back notebook allocation", async () => {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-create-rollback-test-"));
+  const failingKernel = Layer.succeed(
+    Jupyter.Service,
+    Jupyter.Service.of({
+      open: Effect.fail(
+        new Jupyter.OperationFailed({
+          operation: "start test kernel",
+          message: "kernel unavailable",
+        }),
+      ),
+    }),
+  );
+  const layer = pipe(
+    Notebook.layer(
+      new Notebook.Config({
+        artifactRoot,
+        maxLiveNotebooks: 1,
+        maxWaitMillis: 5 * 60 * 1_000,
+        interruptGraceMillis: 5_000,
+      }),
+    ),
+    Layer.provide(failingKernel),
+    Layer.provide(CellOutput.layer),
+    Layer.provide(preludeLayer),
+    Layer.provide(NodeServices.layer),
+  );
+
+  try {
+    await Effect.runPromise(
+      pipe(
+        Effect.gen(function* () {
+          const notebooks = yield* Notebook.Service;
+          const failure = yield* Effect.flip(
+            notebooks.create(
+              new Notebook.CreateInput({ name: "analysis" }),
+            ),
+          );
+          assert.equal(failure.operation, "start notebook kernel");
+          assert.equal(Chunk.isEmpty(yield* notebooks.list()), true);
+          assert.deepEqual(readdirSync(artifactRoot), []);
+        }),
+        Effect.provide(layer),
+      ),
+    );
+  } finally {
+    rmSync(artifactRoot, { force: true, recursive: true });
+  }
+});
+
 test("list filters names by case-insensitive containment and status exactly", () =>
   fixture((notebooks) =>
     Effect.gen(function* () {
       const primary = yield* notebooks.create(
-        new Notebook.CreateInput({ name: Option.some("Analysis Primary") }),
+        new Notebook.CreateInput({ name: "Analysis Primary" }),
       );
       yield* notebooks.stopNotebook(primary.id);
       const archive = yield* notebooks.create(
-        new Notebook.CreateInput({ name: Option.some("analysis archive") }),
+        new Notebook.CreateInput({ name: "analysis archive" }),
       );
       yield* notebooks.stopNotebook(archive.id);
       const notes = yield* notebooks.create(
-        new Notebook.CreateInput({ name: Option.some("notes") }),
+        new Notebook.CreateInput({ name: "notes" }),
       );
 
       const byName = yield* notebooks.list(
@@ -184,7 +246,9 @@ test("discovery restores the existing notebook and cell objects", { timeout: 20_
       pipe(
         Effect.gen(function* () {
           const notebooks = yield* Notebook.Service;
-          const notebook = yield* notebooks.create();
+          const notebook = yield* notebooks.create(
+            new Notebook.CreateInput({ name: "discovered" }),
+          );
           const cell = yield* notebooks.start(
             new Notebook.StartInput({
               notebookId: Option.some(notebook.id),
@@ -239,7 +303,7 @@ test("discovery defaults unfinished cells without inspecting cell files", async 
     writeFileSync(
       journal,
       [
-        { sequence: 0, timestamp, event: "notebook_created", name: null },
+        { sequence: 0, timestamp, event: "notebook_created", name: "recovered" },
         { sequence: 1, timestamp, event: "cell_started", cell_id: cellId, code: "await never" },
       ]
         .map((record) => JSON.stringify(record))
@@ -278,7 +342,9 @@ test(
         pipe(
           Effect.gen(function* () {
             const notebooks = yield* Notebook.Service;
-            const notebook = yield* notebooks.create();
+            const notebook = yield* notebooks.create(
+              new Notebook.CreateInput({ name: "inherited" }),
+            );
             const cell = yield* notebooks.start(
               new Notebook.StartInput({
                 notebookId: Option.some(notebook.id),
@@ -357,7 +423,7 @@ test("discovery ignores dangling notebook links without hiding valid entries", a
         sequence: 0,
         timestamp,
         event: "notebook_created",
-        name: null,
+        name: "valid",
       })}\n`,
     );
     symlinkSync(relative(childRoot, canonicalPath), join(childRoot, validId), "dir");
@@ -392,7 +458,9 @@ test(
       Effect.gen(function* () {
         assert.equal(Pi.DEFAULT_MAX_LINES, 2_000);
 
-        const notebook = yield* notebooks.create();
+        const notebook = yield* notebooks.create(
+          new Notebook.CreateInput({ name: "exact page" }),
+        );
         const cell = yield* notebooks.start(
           new Notebook.StartInput({
             notebookId: Option.some(notebook.id),
@@ -440,7 +508,9 @@ test(
   () =>
     fixture((notebooks) =>
       Effect.gen(function* () {
-        const notebook = yield* notebooks.create();
+        const notebook = yield* notebooks.create(
+          new Notebook.CreateInput({ name: "pagination" }),
+        );
         const cell = yield* notebooks.start(
           new Notebook.StartInput({
             notebookId: Option.some(notebook.id),
@@ -512,7 +582,9 @@ await Deno.jupyter.display({ "text/plain": "text after image\\n" }, { raw: true 
 test("wait exposes byte cursors for open and oversized lines", { timeout: 20_000 }, () =>
   fixture((notebooks) =>
     Effect.gen(function* () {
-      const notebook = yield* notebooks.create();
+      const notebook = yield* notebooks.create(
+        new Notebook.CreateInput({ name: "cursor" }),
+      );
       const partialCell = yield* notebooks.start(
         new Notebook.StartInput({
           notebookId: Option.some(notebook.id),
@@ -607,7 +679,9 @@ test(
   () =>
     fixture((notebooks) =>
       Effect.gen(function* () {
-        const notebook = yield* notebooks.create();
+        const notebook = yield* notebooks.create(
+          new Notebook.CreateInput({ name: "wait" }),
+        );
         const progressiveCell = yield* notebooks.start(
           new Notebook.StartInput({
             notebookId: Option.some(notebook.id),

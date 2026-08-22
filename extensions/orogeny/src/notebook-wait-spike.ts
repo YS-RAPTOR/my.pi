@@ -17,10 +17,12 @@ import {
   Stream,
   String as Str,
 } from "effect";
+import { Config } from "#o/config";
 import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 import { Prelude } from "#o/prelude";
+import { Syntax } from "#o/syntax";
 
 const TINY_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -82,7 +84,9 @@ const settle = Effect.fnUntraced(function* (
 
 const program = Effect.gen(function* () {
   const notebooks = yield* Notebook.Service;
-  const notebook = yield* notebooks.create();
+  const notebook = yield* notebooks.create(
+    new Notebook.CreateInput({ name: "wait spike" }),
+  );
   const cell = yield* notebooks.start(
     new Notebook.StartInput({
       notebookId: Option.some(notebook.id),
@@ -370,6 +374,8 @@ const mainLayer = pipe(
   Layer.provide(Jupyter.layer),
   Layer.provide(CellOutput.layer),
   Layer.provide(Prelude.layer),
+  Layer.provide(Syntax.layer),
+  Layer.provide(Config.layer),
   Layer.provide(NodeServices.layer),
 );
 

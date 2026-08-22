@@ -56,7 +56,11 @@ const optionalNotFound = <Value, Requirements>(
     Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(Option.none())),
   );
 
-const notebookLayer = (artifactRoot: string, config: Config.Value) =>
+const notebookLayer = (
+  artifactRoot: string,
+  config: Config.Value,
+  prelude: Prelude.Interface,
+) =>
   pipe(
     Notebook.layer(
       new Notebook.Config({
@@ -68,7 +72,7 @@ const notebookLayer = (artifactRoot: string, config: Config.Value) =>
     ),
     Layer.provide(Jupyter.layer),
     Layer.provide(CellOutput.layer),
-    Layer.provide(Prelude.layer),
+    Layer.provide(Layer.succeed(Prelude.Service, prelude)),
     Layer.provide(NodeServices.layer),
   );
 
@@ -78,6 +82,7 @@ export const layer = Layer.effect(
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
     const config = yield* Config.Service;
+    const prelude = yield* Prelude.Service;
     const barriers = yield* Pi.Hooks.Barriers.Service;
     const rootScope = yield* Effect.scope;
     const active = yield* SynchronizedRef.make(Option.none<Active>());
@@ -163,7 +168,10 @@ export const layer = Layer.effect(
             )
               yield* inherit(event.previousSessionFile, artifactRoot);
 
-            const context = yield* Layer.buildWithScope(notebookLayer(artifactRoot, config), scope);
+            const context = yield* Layer.buildWithScope(
+              notebookLayer(artifactRoot, config, prelude),
+              scope,
+            );
             return new Active({
               notebook: Context.get(context, Notebook.Service),
               scope,
@@ -199,8 +207,6 @@ export const layer = Layer.effect(
     yield* barriers.handle(
       "session_start",
       Effect.fn("Orogeny.Session.onStart")(function* (event) {
-        const host = yield* Pi.Host.Service;
-        if ((yield* host.agent.getFlag("orogeny")) !== true) return;
         const callback = yield* Pi.Host.Callback;
         yield* pipe(start(event, yield* callback.session.file), Effect.orDie);
       }),
