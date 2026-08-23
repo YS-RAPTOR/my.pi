@@ -37,5 +37,8 @@
     "skills": [
       "./skills"
     ]
+  },
+  "allowScripts": {
+    "github:YS-RAPTOR/stream-sitter#e0666f9a12e65f64370b2428c59ca3e3dfd310c1": true
   }
 }

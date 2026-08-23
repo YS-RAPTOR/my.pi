@@ -3,9 +3,10 @@ import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/p
 import { statusColor, type StatusPhase } from "./status.ts";
 
 export type OutlineEdge = Component;
+export type OutlineTheme = Pick<Theme, "fg">;
 
 export type OutlineOptions = Readonly<{
-  readonly theme: Theme;
+  readonly theme: OutlineTheme;
   readonly phase: StatusPhase;
   readonly top?: OutlineEdge;
   readonly center: Component;
@@ -22,13 +23,16 @@ const pad = (text: string, width: number) => {
 
 export class Outline implements Component {
   private readonly options: OutlineOptions;
+  private bodyWidth: number | undefined;
+  private bodyPadding: number | undefined;
+  private bodyLines: Array<Readonly<{ content: string; rendered: string }>> = [];
 
   constructor(options: OutlineOptions) {
     this.options = options;
   }
 
   private edgeContent(edge: OutlineEdge, width: number) {
-    return fit(edge.render(width)[0] ?? "", width);
+    return fit((edge.render(width)[0] ?? "").trimEnd(), width);
   }
 
   private edge(
@@ -75,10 +79,24 @@ export class Outline implements Component {
     const footer = this.options.footer?.render(width) ?? [];
     const blank = this.bodyLine("", width, padding);
 
+    if (this.bodyWidth !== width || this.bodyPadding !== padding) {
+      this.bodyWidth = width;
+      this.bodyPadding = padding;
+      this.bodyLines = [];
+    }
+    const body = content.map((line, index) => {
+      const cached = this.bodyLines[index];
+      if (cached?.content === line) return cached.rendered;
+      const rendered = this.bodyLine(line, width, padding);
+      this.bodyLines[index] = { content: line, rendered };
+      return rendered;
+    });
+    this.bodyLines.length = content.length;
+
     return [
       this.edge(this.options.top, width, ["╭", "╮"]),
       blank,
-      ...content.map((line) => this.bodyLine(line, width, padding)),
+      ...body,
       blank,
       ...footer,
       this.edge(this.options.bottom, width, ["╰", "╯"]),
@@ -86,6 +104,9 @@ export class Outline implements Component {
   }
 
   invalidate(): void {
+    this.bodyWidth = undefined;
+    this.bodyPadding = undefined;
+    this.bodyLines = [];
     this.options.top?.invalidate();
     this.options.center.invalidate();
     this.options.footer?.invalidate();

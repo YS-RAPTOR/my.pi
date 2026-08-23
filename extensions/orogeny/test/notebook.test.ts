@@ -143,6 +143,35 @@ test("create initializes the generated language prelude", { timeout: 20_000 }, (
   ),
 );
 
+test("language tags trim framing lines and common indentation", { timeout: 20_000 }, () =>
+  fixture((notebooks) =>
+    Effect.gen(function* () {
+      const notebook = yield* notebooks.create(
+        new Notebook.CreateInput({ name: "normalized prelude" }),
+      );
+      const cell = yield* notebooks.start(
+        new Notebook.StartInput({
+          notebookId: Option.some(notebook.id),
+          code: [
+            "const value = $ts`",
+            "      const answer: number = 42;",
+            "        console.log(answer);",
+            "    `;",
+            "console.log(JSON.stringify(value));",
+          ].join("\n"),
+        }),
+      );
+      yield* awaitTerminal(notebooks, cell);
+      const events = yield* collectWait(notebooks, cell, Option.none(), 5_000);
+      assert.equal(completion(events).status, "succeeded");
+      assert.equal(
+        text(events).endsWith('"const answer: number = 42;\\n  console.log(answer);"\n'),
+        true,
+      );
+    }),
+  ),
+);
+
 test("failed kernel startup rolls back notebook allocation", async () => {
   const artifactRoot = mkdtempSync(join(tmpdir(), "orogeny-create-rollback-test-"));
   const failingKernel = Layer.succeed(
