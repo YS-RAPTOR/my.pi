@@ -22,13 +22,20 @@ const preludeSource = (languages: HashMap.HashMap<string, string>) => {
     Arr.map(([tag]) => `  ${tag},`),
     Arr.join("\n"),
   );
+  const supported = pipe(
+    entries,
+    Arr.map(([tag]) => tag.slice(1)),
+    JSON.stringify,
+  );
   const values = pipe(
     entries,
     Arr.map(([, language]) => `    makeLanguageTag(${JSON.stringify(language)}),`),
     Arr.join("\n"),
   );
 
-  return `const [
+  return `const $languages = Object.freeze(${supported}) as readonly string[];
+
+const [
 ${bindings}
 ] = (() => {
   const nativeDisplay = Deno.jupyter.display.bind(Deno.jupyter);

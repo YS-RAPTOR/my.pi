@@ -132,13 +132,17 @@ test("create initializes the generated language prelude", { timeout: 20_000 }, (
       const cell = yield* notebooks.start(
         new Notebook.StartInput({
           notebookId: Option.some(notebook.id),
-          code: "console.log($ts`const answer: number = 42;`)",
+          code: [
+            "console.log($ts`const answer: number = 42;`);",
+            'console.log(JSON.stringify([$languages.includes("ts"), $languages.includes("py"), $languages.includes("not_a_language")]));',
+          ].join("\n"),
         }),
       );
       yield* awaitTerminal(notebooks, cell);
       const events = yield* collectWait(notebooks, cell, Option.none(), 5_000);
       assert.equal(completion(events).status, "succeeded");
-      assert.match(text(events), /const answer: number = 42;\n$/);
+      assert.match(text(events), /const answer: number = 42;\n/);
+      assert.match(text(events), /\[true,true,false\]\n$/);
     }),
   ),
 );

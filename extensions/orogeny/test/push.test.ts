@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setImmediate } from "node:timers/promises";
+import { setImmediate, setTimeout } from "node:timers/promises";
 import { test } from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Chunk, Effect, HashMap, Schema } from "effect";
@@ -13,7 +13,7 @@ const theme = {
   getColorMode: () => "truecolor" as const,
 } as Theme;
 
-test("publishes streaming syntax without reentering the host renderer", async () => {
+test("applies synchronous streaming syntax without reentering the host renderer", async () => {
   const frame = new Syntax.Frame({
     startIndex: 0,
     endIndex: 5,
@@ -22,9 +22,14 @@ test("publishes streaming syntax without reentering the host renderer", async ()
     ),
     needsRender: false,
   });
+  let updates = 0;
   const highlighter: Syntax.Highlighter = {
     update: () => Effect.succeed(frame.highlights),
-    updateFrame: () => Effect.succeed(frame),
+    updateFrame: () =>
+      Effect.sync(() => {
+        updates++;
+        return frame;
+      }),
     completeFrame: () =>
       Effect.succeed(
         new Syntax.Frame({
@@ -47,7 +52,7 @@ test("publishes streaming syntax without reentering the host renderer", async ()
     theme,
   );
   let invalidations = 0;
-  let updating = true;
+  let rendering = true;
   let reentered = false;
 
   code.update({
@@ -57,12 +62,32 @@ test("publishes streaming syntax without reentering the host renderer", async ()
     sealed: false,
     invalidate: () => {
       invalidations++;
-      reentered ||= updating;
+      reentered ||= rendering;
     },
   });
-  updating = false;
+  rendering = false;
 
+  assert.equal(updates, 1);
   assert.equal(reentered, false);
+  assert.equal(invalidations, 0);
+
+  await setTimeout(20);
+  rendering = true;
+  code.update({
+    theme,
+    source: "const value",
+    expanded: true,
+    sealed: false,
+    invalidate: () => {
+      invalidations++;
+      reentered ||= rendering;
+    },
+  });
+  rendering = false;
+
+  assert.equal(updates, 2);
+  assert.equal(reentered, false);
+  assert.equal(invalidations, 0);
   await setImmediate();
-  assert.equal(invalidations, 1);
+  assert.equal(invalidations, 0);
 });
