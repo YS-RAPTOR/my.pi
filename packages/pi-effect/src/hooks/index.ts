@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Effect, Layer } from "effect";
 import { Host } from "../host/index.ts";
+import { makeRunPromise } from "../run-promise.ts";
 import { Barriers } from "./barriers/index.ts";
 import { Interceptors } from "./interceptors/index.ts";
 import { Notifications } from "./notifications/index.ts";
@@ -55,7 +56,7 @@ export const register = Effect.fn("Pi.Hooks.register")(function* (
     | Interceptors.Service
     | Notifications.Service
   >();
-  const runPromise = Effect.runPromiseWith(context);
+  const runPromise = makeRunPromise(context);
 
   yield* Effect.sync(() => {
     // SAFETY: On preserves ExtensionAPI.on's event-to-context correlation while exposing its generic form.

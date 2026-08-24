@@ -18,6 +18,7 @@ import {
   pipe,
 } from "effect";
 import { Host } from "./host/index.ts";
+import { makeRunPromise } from "./run-promise.ts";
 
 type ParameterSchema = PiToolDefinition["parameters"];
 type PiCommandDefinition = Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -279,7 +280,7 @@ export const register = Effect.fn("Pi.Contributions.register")(function* (
   const contributions = yield* Service;
   const registrations = yield* contributions.registrations;
   const context = yield* Effect.context<RuntimeServices>();
-  const runPromise = Effect.runPromiseWith(context);
+  const runPromise = makeRunPromise(context);
 
   yield* Effect.sync(() => {
     for (const definition of registrations.tools) {

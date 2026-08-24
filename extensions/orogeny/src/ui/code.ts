@@ -31,11 +31,7 @@ const printable = (text: string) => {
 
     output += text.slice(start, index);
     output +=
-      code === 0x09
-        ? "\\t"
-        : code === 0x0d
-          ? "\\r"
-          : `\\x${code.toString(16).padStart(2, "0")}`;
+      code === 0x09 ? "\\t" : code === 0x0d ? "\\r" : `\\x${code.toString(16).padStart(2, "0")}`;
     start = index + 1;
   }
 
@@ -222,8 +218,17 @@ export class Code implements Component {
     if (this.cachedWidth === width && this.cachedLines !== undefined) return this.cachedLines;
 
     const collapsed = !this.expanded && this.lines.length > COLLAPSED_LINES + 1;
-    const visible = collapsed ? this.lines.slice(0, COLLAPSED_LINES) : this.lines;
+    const visible = collapsed ? this.lines.slice(-COLLAPSED_LINES) : this.lines;
     const rendered: Array<string> = [];
+
+    if (collapsed)
+      rendered.push(
+        truncateToWidth(
+          this.theme.fg("muted", `… ${this.lines.length - visible.length} earlier lines`),
+          width,
+          "…",
+        ),
+      );
     let highlight = 0;
 
     for (const line of visible) {
@@ -239,15 +244,6 @@ export class Code implements Component {
         };
       rendered.push(line.rendered.value);
     }
-
-    if (collapsed)
-      rendered.push(
-        truncateToWidth(
-          this.theme.fg("muted", `… ${this.lines.length - visible.length} more lines`),
-          width,
-          "…",
-        ),
-      );
 
     this.cachedWidth = width;
     this.cachedLines = rendered;

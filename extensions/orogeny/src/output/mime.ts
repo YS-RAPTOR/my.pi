@@ -3,6 +3,13 @@ import { extension } from "mime-types";
 import { Chunk, Data, Effect, Match, pipe, Predicate, Schema, String as Str } from "effect";
 import { Jupyter } from "#o/jupyter";
 
+export const CODE_MIME = "application/vnd.orogeny.code+json";
+
+export const Code = Schema.Struct({
+  language: Schema.String,
+  code: Schema.String,
+});
+
 export type Handling = "concatenate" | "indivisible" | "reference";
 export type Encoding = "utf8" | "json" | "base64";
 export type Rule = readonly [handling: Handling, encoding: Encoding];
@@ -21,6 +28,7 @@ const JsonText = Schema.fromJsonString(Schema.Json);
 export const ruleFor = pipe(
   Match.type<string>(),
   Match.withReturnType<Rule>(),
+  Match.when(CODE_MIME, () => ["concatenate", "json"]),
   Match.when(Str.startsWith("text/"), () => ["concatenate", "utf8"]),
   Match.when("application/json", () => ["concatenate", "json"]),
   Match.when("image/svg+xml", () => ["indivisible", "utf8"]),
@@ -74,6 +82,7 @@ export const fitsInline = (representations: Chunk.Chunk<Representation>) => {
 const rank = pipe(
   Match.type<string>(),
   Match.withReturnType<number>(),
+  Match.when(CODE_MIME, () => -10),
   Match.when("image/svg+xml", () => 10),
   Match.when(Str.startsWith("image/"), () => 0),
   Match.when("application/json", () => 20),
@@ -93,6 +102,9 @@ export const decodeText = (mime: string, value: Schema.Json | undefined) =>
   mime.startsWith("text/")
     ? Schema.decodeUnknownEffect(Schema.String)(value)
     : Schema.encodeUnknownEffect(JsonText)(value);
+
+export const decodeCode = Schema.decodeUnknownEffect(Code);
+export const decodeCodeText = Schema.decodeUnknownEffect(Schema.fromJsonString(Code));
 
 export const resize = (bytes: Uint8Array, mime: string) =>
   pipe(

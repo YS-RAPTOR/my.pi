@@ -1,7 +1,6 @@
 import { Array as Arr, Context, Effect, HashMap, Layer, Order, pipe } from "effect";
 import { Syntax } from "#o/syntax";
-
-export const CODE_MIME = "application/vnd.orogeny.code+json";
+import { CODE_MIME } from "./output/mime.ts";
 
 export type Interface = Readonly<{
   readonly get: Effect.Effect<string>;

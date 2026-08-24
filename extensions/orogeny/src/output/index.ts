@@ -29,6 +29,7 @@ export class OperationFailed extends Data.TaggedError("CellOutput")<{
 
 export type Content = Data.TaggedEnum<{
   text: { readonly text: string };
+  code: { readonly language: string; readonly text: string };
   image: { readonly data: string; readonly mimeType: string };
 }>;
 
@@ -70,6 +71,7 @@ class State extends Data.Class<{
 
 class ProjectedRecord extends Data.Class<{
   readonly text: string;
+  readonly language: Option.Option<string>;
   readonly image: Option.Option<Pi.ResizedImage>;
   readonly open: boolean;
 }> {}
@@ -238,7 +240,13 @@ const paginate = Effect.fnUntraced(function* (
     content:
       slice.text.length === 0
         ? page.content
-        : Chunk.append(page.content, Content.text({ text: slice.text })),
+        : Chunk.append(
+            page.content,
+            Option.match(projection.language, {
+              onNone: () => Content.text({ text: slice.text }),
+              onSome: (language) => Content.code({ language, text: slice.text }),
+            }),
+          ),
     bytes: page.bytes + slice.bytes,
     lines: page.lines + slice.lines,
   });
@@ -447,6 +455,7 @@ export const layer = Layer.effect(
             );
             return new ProjectedRecord({
               text: Buffer.from(snapshot.streams.subarray(record.offset, end)).toString("utf8"),
+              language: Option.none(),
               image: Option.none(),
               open: !sealed && index === records.length - 1,
             });
@@ -455,6 +464,7 @@ export const layer = Layer.effect(
           if (record.type === "error") {
             return new ProjectedRecord({
               text: `${record.traceback.join("\n")}${record.traceback.length === 0 ? "" : "\n"}${record.name}: ${record.value}\n`,
+              language: Option.none(),
               image: Option.none(),
               open: false,
             });
@@ -463,6 +473,7 @@ export const layer = Layer.effect(
           if (record.type === "clear_output") {
             return new ProjectedRecord({
               text: `[clear_output wait=${record.wait}]\n`,
+              language: Option.none(),
               image: Option.none(),
               open: false,
             });
@@ -474,14 +485,26 @@ export const layer = Layer.effect(
               return yield* failed("read cell output", "MIME bundle is empty");
 
             const [mime, value] = selected;
-            if (Mime.ruleFor(mime)[0] !== "concatenate")
+            const [handling, encoding] = Mime.ruleFor(mime);
+            if (handling !== "concatenate")
               return yield* failed(
                 "read cell output",
                 "Inline MIME representation is not concatenate",
               );
 
+            if (mime === Mime.CODE_MIME) {
+              const code = yield* pipe(Mime.decodeCode(value), mapFailed("read cell output"));
+              return new ProjectedRecord({
+                text: code.code,
+                language: Option.some(code.language),
+                image: Option.none(),
+                open: false,
+              });
+            }
+
             return new ProjectedRecord({
               text: yield* pipe(Mime.decodeText(mime, value), mapFailed("read cell output")),
+              language: encoding === "json" ? Option.some("json") : Option.none(),
               image: Option.none(),
               open: false,
             });
@@ -501,22 +524,39 @@ export const layer = Layer.effect(
             return yield* failed("read cell output", "MIME bundle is empty");
 
           const [mime, file] = selected;
-          const [handling] = Mime.ruleFor(mime);
+          const [handling, encoding] = Mime.ruleFor(mime);
           const annotation = entries.map(([available]) => available).join(",");
           const reference = `[${artifactId}](<${artifactPath}>){${annotation}}\n`;
           if (handling === "reference")
-            return new ProjectedRecord({ text: reference, image: Option.none(), open: false });
-
-          const representationPath = paths.join(artifactPath, file);
-          if (handling === "concatenate")
             return new ProjectedRecord({
-              text: yield* pipe(
-                files.readFileString(representationPath),
-                mapFailed("read cell output"),
-              ),
+              text: reference,
+              language: Option.none(),
               image: Option.none(),
               open: false,
             });
+
+          const representationPath = paths.join(artifactPath, file);
+          if (handling === "concatenate") {
+            const value = yield* pipe(
+              files.readFileString(representationPath),
+              mapFailed("read cell output"),
+            );
+            if (mime === Mime.CODE_MIME) {
+              const code = yield* pipe(Mime.decodeCodeText(value), mapFailed("read cell output"));
+              return new ProjectedRecord({
+                text: code.code,
+                language: Option.some(code.language),
+                image: Option.none(),
+                open: false,
+              });
+            }
+            return new ProjectedRecord({
+              text: value,
+              language: encoding === "json" ? Option.some("json") : Option.none(),
+              image: Option.none(),
+              open: false,
+            });
+          }
 
           const resized = yield* pipe(
             files.readFile(representationPath),
@@ -525,6 +565,7 @@ export const layer = Layer.effect(
           );
           return new ProjectedRecord({
             text: resized === null ? reference : `[Image](<${artifactPath}>){${annotation}}\n`,
+            language: Option.none(),
             image: Option.fromNullOr(resized),
             open: false,
           });

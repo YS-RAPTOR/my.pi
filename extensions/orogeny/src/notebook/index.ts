@@ -834,7 +834,7 @@ export const layer = (config: Config) =>
               });
 
             yield* consume(Option.getOrElse(input.cursor, CellOutput.Cursor.start), 0, 0);
-          }),
+          }).pipe(Effect.catchCause((cause) => Queue.failCause(queue, cause))),
         );
 
       const interrupt = Effect.fn("Notebook.interrupt")(function* (cell: Cell, live: Resources) {
