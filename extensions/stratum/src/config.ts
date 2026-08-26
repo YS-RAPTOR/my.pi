@@ -42,6 +42,10 @@ export const schema = Schema.Struct({
       "max-context-tokens": positiveInteger(896_000),
     }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  rewriters: Schema.Struct({
+    enabled,
+    clarify: enabled,
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   shell: Schema.Struct({
     enabled,
     "default-wait-timeout-seconds": nonNegativeInteger(30),

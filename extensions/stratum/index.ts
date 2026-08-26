@@ -6,6 +6,7 @@ import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
 import { Commands } from "#s/features/commands";
 import { Footer } from "#s/features/footer";
+import { Rewriters } from "#s/features/rewriters";
 import { Shell } from "#s/features/shell";
 import { Pi } from "@ys-raptor/pi-effect";
 
@@ -18,6 +19,7 @@ export const layer = (pi: ExtensionAPI) => {
     Pi.Host.layer(pi),
     Pi.Contributions.layer,
     Pi.Hooks.layer,
+    Rewriters.Register.layer,
   );
   const activity = pipe(Activity.layer, Layer.provide(dependencies));
   const shell = pipe(Shell.layer, Layer.provide(dependencies));
@@ -27,6 +29,13 @@ export const layer = (pi: ExtensionAPI) => {
     pipe(Commands.layer, Layer.provide(dependencies)),
     activity,
     pipe(Footer.layer, Layer.provide(dependencies)),
+    pipe(
+      Layer.mergeAll(
+        Rewriters.Clarify.layer,
+        Rewriters.layer,
+      ),
+      Layer.provide(dependencies),
+    ),
     shell,
   );
 };
@@ -46,6 +55,7 @@ export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
 export { Commands } from "#s/features/commands";
 export { Footer } from "#s/features/footer";
+export { Rewriters } from "#s/features/rewriters";
 export { Shell } from "#s/features/shell";
 export { Pi } from "@ys-raptor/pi-effect";
 export default Stratum;
