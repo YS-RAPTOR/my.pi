@@ -4,6 +4,7 @@ import { Effect, Layer, ManagedRuntime, pipe } from "effect";
 import { Config } from "#s/config";
 import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
+import { Commands } from "#s/features/commands";
 import { Footer } from "#s/features/footer";
 import { Shell } from "#s/features/shell";
 import { Pi } from "@ys-raptor/pi-effect";
@@ -23,6 +24,7 @@ export const layer = (pi: ExtensionAPI) => {
   return Layer.mergeAll(
     dependencies,
     pipe(BetterSkills.layer, Layer.provide(dependencies)),
+    pipe(Commands.layer, Layer.provide(dependencies)),
     activity,
     pipe(Footer.layer, Layer.provide(dependencies)),
     shell,
@@ -42,6 +44,7 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 
 export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
+export { Commands } from "#s/features/commands";
 export { Footer } from "#s/features/footer";
 export { Shell } from "#s/features/shell";
 export { Pi } from "@ys-raptor/pi-effect";

@@ -1,9 +1,7 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 
-const enabled = Schema.Boolean.pipe(
-  Schema.withDecodingDefault(Effect.succeed(true)),
-);
+const enabled = Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true)));
 const positiveInteger = (fallback: number) =>
   Schema.Int.check(Schema.isGreaterThan(0)).pipe(
     Schema.withDecodingDefault(Effect.succeed(fallback)),
@@ -13,9 +11,9 @@ const nonNegativeInteger = (fallback: number) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 const percentage = (fallback: number) =>
-  Schema.Finite.check(
-    Schema.isBetween({ minimum: 0, maximum: 100 }),
-  ).pipe(Schema.withDecodingDefault(Effect.succeed(fallback)));
+  Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 100 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(fallback)),
+  );
 
 export const schema = Schema.Struct({
   activity: Schema.Struct({
@@ -35,6 +33,14 @@ export const schema = Schema.Struct({
     gating: enabled,
     expansion: enabled,
     "command-timeout-ms": positiveInteger(10_000),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  commands: Schema.Struct({
+    enabled,
+    stretch: Schema.Struct({
+      enabled,
+      "step-tokens": positiveInteger(64_000),
+      "max-context-tokens": positiveInteger(896_000),
+    }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   shell: Schema.Struct({
     enabled,
@@ -70,9 +76,7 @@ export const schema = Schema.Struct({
 
 export type Value = typeof schema.Type;
 
-export class Service extends Context.Service<Service, Value>()(
-  "stratum/Config",
-) {}
+export class Service extends Context.Service<Service, Value>()("stratum/Config") {}
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(schema));
 
