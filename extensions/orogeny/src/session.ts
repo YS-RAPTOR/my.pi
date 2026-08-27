@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   Array as Arr,
   Context,
@@ -16,11 +16,8 @@ import {
   SynchronizedRef,
 } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
-import { Config } from "#o/config";
-import { Jupyter } from "#o/jupyter";
 import { Notebook } from "#o/notebook";
-import { CellOutput } from "#o/output";
-import { Prelude } from "#o/prelude";
+import { PiTools } from "#o/pi";
 
 export class OperationFailed extends Data.TaggedError("OrogenySession")<{
   readonly operation: string;
@@ -33,6 +30,7 @@ export type Interface = Readonly<{
   start: (
     event: StartEvent,
     sessionFile: Option.Option<string>,
+    context: ExtensionContext,
   ) => Effect.Effect<void, OperationFailed>;
   stop: Effect.Effect<void>;
   notebook: Effect.Effect<Notebook.Interface, OperationFailed>;
@@ -56,34 +54,14 @@ const optionalNotFound = <Value, Requirements>(
     Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(Option.none())),
   );
 
-const notebookLayer = (
-  artifactRoot: string,
-  config: Config.Value,
-  prelude: Prelude.Interface,
-) =>
-  pipe(
-    Notebook.layer(
-      new Notebook.Config({
-        artifactRoot,
-        maxLiveNotebooks: config["max-live-notebooks"],
-        maxWaitMillis: config["max-wait-ms"],
-        interruptGraceMillis: config["interrupt-grace-ms"],
-      }),
-    ),
-    Layer.provide(Jupyter.layer),
-    Layer.provide(CellOutput.layer),
-    Layer.provide(Layer.succeed(Prelude.Service, prelude)),
-    Layer.provide(NodeServices.layer),
-  );
-
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
-    const config = yield* Config.Service;
-    const prelude = yield* Prelude.Service;
     const barriers = yield* Pi.Hooks.Barriers.Service;
+    const notebooks = yield* Notebook.Service;
+    const piTools = yield* PiTools.Service;
     const rootScope = yield* Effect.scope;
     const active = yield* SynchronizedRef.make(Option.none<Active>());
 
@@ -152,7 +130,7 @@ export const layer = Layer.effect(
     });
 
     const start: Interface["start"] = Effect.fn("Orogeny.Session.start")(
-      function* (event, sessionFile) {
+      function* (event, sessionFile, context) {
         yield* stop;
         const scope = yield* Scope.fork(rootScope, "sequential");
         const opened = yield* pipe(
@@ -168,14 +146,9 @@ export const layer = Layer.effect(
             )
               yield* inherit(event.previousSessionFile, artifactRoot);
 
-            const context = yield* Layer.buildWithScope(
-              notebookLayer(artifactRoot, config, prelude),
-              scope,
-            );
-            return new Active({
-              notebook: Context.get(context, Notebook.Service),
-              scope,
-            });
+            yield* piTools.open(context);
+            const notebook = yield* notebooks.open(artifactRoot);
+            return new Active({ notebook, scope });
           }),
           Scope.provide(scope),
           Effect.onError(() => Scope.close(scope, Exit.void)),
@@ -208,7 +181,8 @@ export const layer = Layer.effect(
       "session_start",
       Effect.fn("Orogeny.Session.onStart")(function* (event) {
         const callback = yield* Pi.Host.Callback;
-        yield* pipe(start(event, yield* callback.session.file), Effect.orDie);
+        const context = yield* Pi.Host.CallbackContext;
+        yield* pipe(start(event, yield* callback.session.file, context), Effect.orDie);
       }),
     );
     yield* barriers.handle("session_shutdown", () => stop);

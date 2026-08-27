@@ -124,16 +124,11 @@ export const layer = Layer.effectDiscard(
       name: "push",
       label: "Push Cell",
       description:
-        "Admit one TypeScript cell to an existing idle notebook. Cells may embed other languages with the preloaded $language tagged templates. Omit notebookId to use the current notebook. Admission does not mean execution completed; use wait to observe status and output.",
+        "Admit one TypeScript cell to an existing idle notebook. Omit notebookId to use the current notebook. Admission does not mean execution completed; use wait to observe status and output.",
       promptSnippet: "Admit TypeScript code to an existing notebook",
       promptGuidelines: [
+        "Every cell is TypeScript.",
         "Use push only with an existing idle notebook; use create first when no current live notebook exists.",
-        "Every cell is TypeScript. Embed another language using its usual file extension as a preloaded tag: for example $py`...`, $ts`...`, or $html`...`.",
-        "The readonly $languages array contains the supported extension tags without the leading $. Use $languages.includes(extension) to check an extension or $languages.filter(...) to search.",
-        "Never place embedded-language source in an ordinary quoted string or untagged template literal. Always construct it with its $extension tag; reserve ordinary strings for normal data and prose.",
-        "A $extension tag interpolates ${...} values and returns a plain string. It removes blank lines framing the template, then dedents every nonblank line by their exact common leading whitespace. Relative indentation and internal blank lines are preserved, trailing whitespace is not trimmed, and no newline is added. Indent multiline templates naturally within the TypeScript cell.",
-        "Never emit source code with console.log or another plain-text output. Use await $extension.display(source) so the notebook preserves its language and syntax highlighting; for example, await $py.display(script).",
-        "Inside a $language`...` value, escape a literal backtick as \\` and a literal ${ sequence as \\${. Never use ANSI control sequences as delimiters.",
         "After push succeeds, use wait with the returned cell ID to observe completion and output.",
       ],
       parameters,

@@ -5,16 +5,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import type { Config } from "#s/config";
-import {
-  cache,
-  context,
-  cost,
-  cwd,
-  model,
-  statuses,
-  tokens,
-  type FooterVariant,
-} from "./parts.ts";
+import { cache, context, cost, cwd, model, statuses, tokens, type FooterVariant } from "./parts.ts";
 import type { Interface as Runway } from "./runway/index.ts";
 
 type EntryUsage = Readonly<{
@@ -73,18 +64,14 @@ const collectUsage = (view: ExtensionContext): UsageTotals => {
       const usage = entry.message.usage;
       addUsage(totals, usage);
       const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
-      totals.latestCacheHitRate =
-        prompt > 0 ? (usage.cacheRead / prompt) * 100 : undefined;
+      totals.latestCacheHitRate = prompt > 0 ? (usage.cacheRead / prompt) * 100 : undefined;
     } else if (
       entry.type === "message" &&
       entry.message.role === "toolResult" &&
       entry.message.usage
     ) {
       addUsage(totals, entry.message.usage);
-    } else if (
-      (entry.type === "compaction" || entry.type === "branch_summary") &&
-      entry.usage
-    ) {
+    } else if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
       addUsage(totals, entry.usage);
     }
   }
@@ -96,9 +83,7 @@ const subscriptionBacked = (view: ExtensionContext): boolean => {
   if (!selected) return false;
   if (selected.provider === "kimi-coding") return true;
   const oauth = view.modelRegistry.getProvider(selected.provider)?.auth.oauth;
-  return (
-    view.modelRegistry.isUsingOAuth(selected) && oauth?.isSubscription === true
-  );
+  return view.modelRegistry.isUsingOAuth(selected) && oauth?.isSubscription === true;
 };
 
 const align = (left: string, right: string, width: number): string => {
@@ -106,9 +91,7 @@ const align = (left: string, right: string, width: number): string => {
     return `${" ".repeat(Math.max(0, width - visibleWidth(right)))}${right}`;
   }
   if (!right) return left;
-  const padding = " ".repeat(
-    Math.max(1, width - visibleWidth(left) - visibleWidth(right)),
-  );
+  const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
   return `${left}${padding}${right}`;
 };
 
@@ -130,15 +113,13 @@ const renderRow = (
     const entries = active();
     const left = entries.filter((entry) => entry.item.side === "left").length;
     const right = entries.length - left;
-    const gaps =
-      Math.max(0, left - 1) + Math.max(0, right - 1) + (left && right ? 1 : 0);
+    const gaps = Math.max(0, left - 1) + Math.max(0, right - 1) + (left && right ? 1 : 0);
     return entries.reduce((total, entry) => total + entry.width, gaps);
   };
 
   for (const { key, through } of degradations) {
     const entry = selected.find((candidate) => candidate.item.key === key);
-    const target =
-      entry?.item.variants.findIndex((variant) => variant.id === through) ?? -1;
+    const target = entry?.item.variants.findIndex((variant) => variant.id === through) ?? -1;
     while (entry && totalWidth() > width && entry.index < target) {
       entry.index += 1;
       entry.width = entry.item.variants[entry.index]!.preferredWidth;
@@ -148,10 +129,7 @@ const renderRow = (
     const entry = selected.find((candidate) => candidate.item.key === key);
     if (!entry || totalWidth() <= width) continue;
     const variant = entry.item.variants[entry.index]!;
-    entry.width -= Math.min(
-      entry.width - variant.minWidth,
-      totalWidth() - width,
-    );
+    entry.width -= Math.min(entry.width - variant.minWidth, totalWidth() - width);
   }
 
   const renderSide = (side: RowItem["side"]) =>
@@ -227,13 +205,7 @@ export class FooterComponent implements Component {
     ];
     const bottomItems = [
       ...(this.config.tokens
-        ? [
-            item(
-              "tokens",
-              "left",
-              tokens({ input: usage.input, output: usage.output }, this.theme),
-            ),
-          ]
+        ? [item("tokens", "left", tokens({ input: usage.input, output: usage.output }, this.theme))]
         : []),
       ...(this.config.cache
         ? [
@@ -274,10 +246,7 @@ export class FooterComponent implements Component {
               context(
                 {
                   percent: contextUsage?.percent ?? null,
-                  contextWindow:
-                    contextUsage?.contextWindow ??
-                    view.model?.contextWindow ??
-                    0,
+                  contextWindow: contextUsage?.contextWindow ?? view.model?.contextWindow ?? 0,
                   warningPercent: this.config.context["warning-percent"],
                   errorPercent: this.config.context["error-percent"],
                 },

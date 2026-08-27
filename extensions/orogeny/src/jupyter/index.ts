@@ -615,19 +615,14 @@ export const layer = Layer.effect(
             Effect.gen(function* () {
               if (yield* Ref.get(closed))
                 return yield* failed("initialize Deno kernel", "Kernel is closed");
-              const response = yield* requestReply(
-                shell,
-                "execute_request",
-                "execute_reply",
-                {
-                  code,
-                  silent: true,
-                  store_history: false,
-                  user_expressions: {},
-                  allow_stdin: false,
-                  stop_on_error: true,
-                },
-              );
+              const response = yield* requestReply(shell, "execute_request", "execute_reply", {
+                code,
+                silent: true,
+                store_history: false,
+                user_expressions: {},
+                allow_stdin: false,
+                stop_on_error: true,
+              });
               const result = yield* pipe(
                 Schema.decodeUnknownEffect(Reply)(response.content),
                 mapFailed("validate Deno kernel initialization"),

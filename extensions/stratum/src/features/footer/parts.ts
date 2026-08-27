@@ -1,10 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import {
-  sliceByColumn,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export type FooterVariant = Readonly<{
   id: string;
@@ -13,11 +9,7 @@ export type FooterVariant = Readonly<{
   render: (width: number) => string;
 }>;
 
-const fixedVariant = (
-  id: string,
-  text: string,
-  theme: Theme,
-): FooterVariant => {
+const fixedVariant = (id: string, text: string, theme: Theme): FooterVariant => {
   const width = visibleWidth(text);
   return {
     id,
@@ -34,10 +26,7 @@ const hiddenVariant: FooterVariant = {
   render: () => "",
 };
 
-const optional = (
-  text: string | undefined,
-  theme: Theme,
-): ReadonlyArray<FooterVariant> =>
+const optional = (text: string | undefined, theme: Theme): ReadonlyArray<FooterVariant> =>
   text ? [fixedVariant("full", text, theme), hiddenVariant] : [hiddenVariant];
 
 const formatTokens = (count: number): string => {
@@ -135,8 +124,7 @@ export const model = (
       id: "elastic",
       minWidth: 1,
       preferredWidth: visibleWidth(text),
-      render: (width) =>
-        truncateToWidth(theme.fg("dim", text), width, theme.fg("dim", "…")),
+      render: (width) => truncateToWidth(theme.fg("dim", text), width, theme.fg("dim", "…")),
     },
   ];
 };
@@ -153,9 +141,7 @@ const displayCwd = (cwd: string, home: string | undefined): string => {
   const fromHome = relative(resolve(home), resolve(cwd));
   const insideHome =
     fromHome === "" ||
-    (fromHome !== ".." &&
-      !fromHome.startsWith(`..${sep}`) &&
-      !isAbsolute(fromHome));
+    (fromHome !== ".." && !fromHome.startsWith(`..${sep}`) && !isAbsolute(fromHome));
   if (!insideHome) return cwd;
   return fromHome ? `~${sep}${fromHome}` : "~";
 };
@@ -175,18 +161,13 @@ const cwdVariantTexts = (data: CwdData): Array<string> => {
   const paths = [path];
   for (let index = 1; index < parts.length; index++) {
     paths.push(
-      index === parts.length - 1
-        ? parts[index]!
-        : `…${sep}${parts.slice(index).join(sep)}`,
+      index === parts.length - 1 ? parts[index]! : `…${sep}${parts.slice(index).join(sep)}`,
     );
   }
   return [...new Set(paths.map((candidate) => `${candidate}${suffix}`))];
 };
 
-export const cwd = (
-  data: CwdData,
-  theme: Theme,
-): ReadonlyArray<FooterVariant> =>
+export const cwd = (data: CwdData, theme: Theme): ReadonlyArray<FooterVariant> =>
   cwdVariantTexts(data).map((text, index, variants) => {
     const width = visibleWidth(text);
     const final = index === variants.length - 1;
@@ -194,8 +175,7 @@ export const cwd = (
       id: index === 0 ? "full" : final ? "last-folder" : `drop-${index}`,
       minWidth: final ? 1 : width,
       preferredWidth: width,
-      render: (availableWidth) =>
-        theme.fg("dim", truncateStart(text, availableWidth)),
+      render: (availableWidth) => theme.fg("dim", truncateStart(text, availableWidth)),
     };
   });
 

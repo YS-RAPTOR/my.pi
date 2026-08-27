@@ -1,17 +1,5 @@
-import {
-  parseFrontmatter,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
-import {
-  Cause,
-  Context,
-  Effect,
-  FileSystem,
-  Layer,
-  Path,
-  Ref,
-  pipe,
-} from "effect";
+import { parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Cause, Context, Effect, FileSystem, Layer, Path, Ref, pipe } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
 
 export type SkillCommand = ReturnType<ExtensionAPI["getCommands"]>[number];
@@ -52,29 +40,21 @@ export type BodyTransformer = (
 ) => Effect.Effect<string, Cause.UnknownError>;
 
 export type Interface = Readonly<{
-  access: (
-    input: AccessInput,
-  ) => Effect.Effect<ReadonlyMap<string, AccessDecision>>;
+  access: (input: AccessInput) => Effect.Effect<ReadonlyMap<string, AccessDecision>>;
   list: Effect.Effect<ReadonlyArray<SkillCommand>>;
   registerPolicy: (policy: AccessPolicy) => Effect.Effect<void>;
   registerTransformer: (transformer: BodyTransformer) => Effect.Effect<void>;
-  render: (
-    skill: SkillRef,
-    cwd: string,
-  ) => Effect.Effect<string, Cause.UnknownError>;
+  render: (skill: SkillRef, cwd: string) => Effect.Effect<string, Cause.UnknownError>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()(
   "stratum/Features.BetterSkills.Runtime",
 ) {}
 
-const referencePattern =
-  /(?<![\\$A-Za-z0-9_-])\$([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?![a-z0-9-])/g;
+const referencePattern = /(?<![\\$A-Za-z0-9_-])\$([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?![a-z0-9-])/g;
 const partialReferencePattern = /(?:^|[^\\$A-Za-z0-9_-])\$([a-z0-9-]*)$/;
 
-export const findInlineReferences = (
-  text: string,
-): ReadonlyArray<InlineReference> =>
+export const findInlineReferences = (text: string): ReadonlyArray<InlineReference> =>
   Array.from(text.matchAll(referencePattern), (match) => {
     const name = match[1] ?? "";
     const start = match.index;
@@ -118,63 +98,50 @@ export const layer = Layer.effect(
       "Features.BetterSkills.Runtime.registerTransformer",
     )((value) => Ref.set(transformer, value));
 
-    const access: Interface["access"] = Effect.fn(
-      "Features.BetterSkills.Runtime.access",
-    )(function* (input) {
-      const current = yield* Ref.get(policy);
-      if (current !== undefined) return yield* current(input);
-      return new Map<string, AccessDecision>(
-        input.skills.map((skill) => [skill.filePath, { available: true }]),
-      );
-    });
+    const access: Interface["access"] = Effect.fn("Features.BetterSkills.Runtime.access")(
+      function* (input) {
+        const current = yield* Ref.get(policy);
+        if (current !== undefined) return yield* current(input);
+        return new Map<string, AccessDecision>(
+          input.skills.map((skill) => [skill.filePath, { available: true }]),
+        );
+      },
+    );
 
     const list: Interface["list"] = pipe(
       host.session.getCommands,
-      Effect.map((commands) =>
-        commands.filter((command) => command.source === "skill"),
-      ),
+      Effect.map((commands) => commands.filter((command) => command.source === "skill")),
       Effect.withSpan("Features.BetterSkills.Runtime.list"),
     );
 
-    const render: Interface["render"] = Effect.fn(
-      "Features.BetterSkills.Runtime.render",
-    )(function* (skill, cwd) {
-      const decision = accessFor(
-        yield* access({ cwd, skills: [skill] }),
-        skill,
-      );
-      if (!decision.available) {
-        return yield* new Cause.UnknownError(
-          decision,
-          decision.reason ?? `Skill ${skill.name} is unavailable`,
-        );
-      }
+    const render: Interface["render"] = Effect.fn("Features.BetterSkills.Runtime.render")(
+      function* (skill, cwd) {
+        const decision = accessFor(yield* access({ cwd, skills: [skill] }), skill);
+        if (!decision.available) {
+          return yield* new Cause.UnknownError(
+            decision,
+            decision.reason ?? `Skill ${skill.name} is unavailable`,
+          );
+        }
 
-      const source = yield* pipe(
-        files.readFileString(skill.filePath),
-        Effect.mapError(
-          (error) =>
-            new Cause.UnknownError(
-              error,
-              `Could not read skill ${skill.name}: ${String(error)}`,
-            ),
-        ),
-      );
-      const parsed = yield* Effect.try({
-        try: () => parseFrontmatter(source).body.trim(),
-        catch: (error) =>
-          new Cause.UnknownError(
-            error,
-            `Could not parse skill ${skill.name}: ${String(error)}`,
+        const source = yield* pipe(
+          files.readFileString(skill.filePath),
+          Effect.mapError(
+            (error) =>
+              new Cause.UnknownError(error, `Could not read skill ${skill.name}: ${String(error)}`),
           ),
-      });
-      const transform = yield* Ref.get(transformer);
-      const body =
-        transform === undefined
-          ? parsed
-          : yield* transform({ body: parsed, cwd, skill });
-      return `<skill name="${xmlAttribute(skill.name)}" location="${xmlAttribute(skill.filePath)}">\nReferences are relative to ${paths.dirname(skill.filePath)}.\n\n${body}\n</skill>`;
-    });
+        );
+        const parsed = yield* Effect.try({
+          try: () => parseFrontmatter(source).body.trim(),
+          catch: (error) =>
+            new Cause.UnknownError(error, `Could not parse skill ${skill.name}: ${String(error)}`),
+        });
+        const transform = yield* Ref.get(transformer);
+        const body =
+          transform === undefined ? parsed : yield* transform({ body: parsed, cwd, skill });
+        return `<skill name="${xmlAttribute(skill.name)}" location="${xmlAttribute(skill.filePath)}">\nReferences are relative to ${paths.dirname(skill.filePath)}.\n\n${body}\n</skill>`;
+      },
+    );
 
     return Service.of({
       access,

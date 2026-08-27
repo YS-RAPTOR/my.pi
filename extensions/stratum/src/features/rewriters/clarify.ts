@@ -1,5 +1,4 @@
-import { Data, Effect, Layer, pipe } from "effect";
-import { Config } from "#s/config";
+import { Data, Effect, Layer } from "effect";
 import * as Registry from "./register.ts";
 
 const SYSTEM_PROMPT = `You rewrite rough, plain-language user prompts into clear, precise prompts for a coding agent.
@@ -31,7 +30,7 @@ class ClarifyFailed extends Data.TaggedError("ClarifyFailed")<{
 
 const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-const runtime = Layer.effectDiscard(
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const registry = yield* Registry.Service;
 
@@ -76,13 +75,6 @@ const runtime = Layer.effectDiscard(
       rewrite,
     });
   }),
-);
-
-export const layer = pipe(
-  Effect.map(Config.Service, ({ rewriters }) =>
-    rewriters.enabled && rewriters.clarify ? runtime : Layer.empty,
-  ),
-  Layer.unwrap,
 );
 
 export * as Clarify from "./clarify.ts";

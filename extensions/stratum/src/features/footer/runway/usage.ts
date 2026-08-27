@@ -47,17 +47,10 @@ export const isCodexContext = (
 ): context is Context & { model: NonNullable<Context["model"]> } =>
   context.model?.provider === codexProvider;
 
-const normalizeWindow = (
-  input: UsageWindowPayload | null | undefined,
-): UsageWindow | undefined => {
+const normalizeWindow = (input: UsageWindowPayload | null | undefined): UsageWindow | undefined => {
   if (input === undefined || input === null) return undefined;
   const reset = input.reset_at;
-  const resetAt =
-    reset && reset > 0
-      ? reset < 10_000_000_000
-        ? reset * 1_000
-        : reset
-      : undefined;
+  const resetAt = reset && reset > 0 ? (reset < 10_000_000_000 ? reset * 1_000 : reset) : undefined;
   return resetAt === undefined
     ? { usedPercent: input.used_percent }
     : { usedPercent: input.used_percent, resetAt };
@@ -85,9 +78,7 @@ export const queryUsage = Effect.fn("Footer.Runway.queryUsage")(function* (
   });
   if (!auth.ok || !auth.apiKey) {
     return yield* new UsageUnavailable({
-      message: auth.ok
-        ? "Codex subscription auth was unavailable."
-        : auth.error,
+      message: auth.ok ? "Codex subscription auth was unavailable." : auth.error,
     });
   }
 
@@ -104,10 +95,7 @@ export const queryUsage = Effect.fn("Footer.Runway.queryUsage")(function* (
     try: (signal) =>
       fetch(usageUrl, {
         headers,
-        signal: AbortSignal.any([
-          signal,
-          AbortSignal.timeout(requestTimeoutMillis),
-        ]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMillis)]),
       }),
     catch: (cause) =>
       new UsageFailed({

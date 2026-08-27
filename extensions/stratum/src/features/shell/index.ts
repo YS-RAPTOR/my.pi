@@ -1,19 +1,3 @@
-import { Effect, Layer, pipe } from "effect";
-import { Config } from "#s/config";
-import { layer as serviceLayer } from "./service.ts";
-import { Store } from "./store.ts";
-import { Tmux } from "./tmux.ts";
-
-const dependencies = Layer.merge(Store.layer, Tmux.layer);
-const configuredLayer = pipe(serviceLayer, Layer.provide(dependencies));
-
-export const layer = pipe(
-  Effect.map(Config.Service, ({ shell }) =>
-    shell.enabled ? configuredLayer : Layer.empty,
-  ),
-  Layer.unwrap,
-);
-
 export {
   Continuation,
   type Interface,
@@ -25,6 +9,7 @@ export {
   ReadResult,
   Service,
   type ShellError,
+  layer as serviceLayer,
 } from "./service.ts";
 export { Inspection, ResourceNotFound, Store } from "./store.ts";
 export { Tmux } from "./tmux.ts";

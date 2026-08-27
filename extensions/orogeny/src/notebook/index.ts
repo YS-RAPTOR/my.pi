@@ -24,17 +24,12 @@ import {
   Stream,
   SynchronizedRef,
 } from "effect";
+import { Bridge } from "#o/bridge";
+import { Config as OrogenyConfig } from "#o/config";
 import { Jupyter } from "#o/jupyter";
 import { CellOutput } from "#o/output";
 import { Prelude } from "#o/prelude";
 import { CellId, NotebookId } from "./types.ts";
-
-export class Config extends Data.Class<{
-  readonly artifactRoot: string;
-  readonly maxLiveNotebooks: number;
-  readonly maxWaitMillis: number;
-  readonly interruptGraceMillis: number;
-}> {}
 
 export class CreateInput extends Data.Class<{
   readonly name: string;
@@ -106,7 +101,11 @@ export type Interface = Readonly<{
   list: (input?: ListInput) => Effect.Effect<Chunk.Chunk<NotebookSummary>, OperationFailed>;
 }>;
 
-export class Service extends Context.Service<Service, Interface>()("orogeny/Notebook.Runtime") {}
+export type Factory = Readonly<{
+  open: (artifactRoot: string) => Effect.Effect<Interface, OperationFailed, Scope.Scope>;
+}>;
+
+export class Service extends Context.Service<Service, Factory>()("orogeny/Notebook") {}
 
 class NotebookState extends Data.Class<{
   readonly status: "idle" | "busy" | "closed";
@@ -156,6 +155,7 @@ export const NotebookJournal = Schema.TupleWithRest(
 );
 
 class Resources extends Data.Class<{
+  readonly bridge: Bridge.Notebook;
   readonly kernel: Jupyter.Handle;
   readonly scope: Scope.Closeable;
 }> {}
@@ -207,18 +207,20 @@ const now = pipe(
 const runtimeFailure = (operation: string, cause: unknown) =>
   new OperationFailed({ operation, message: String(cause) });
 
-export const layer = (config: Config) =>
-  Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const rootScope = yield* Effect.scope;
-      const kernels = yield* Jupyter.Service;
-      const outputs = yield* CellOutput.Service;
-      const prelude = yield* Prelude.Service;
-      const preludeSource = yield* prelude.get;
-      const files = yield* FileSystem.FileSystem;
-      const paths = yield* Path.Path;
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const config = yield* OrogenyConfig.Service;
+    const bridges = yield* Bridge.Service;
+    const kernels = yield* Jupyter.Service;
+    const outputs = yield* CellOutput.Service;
+    const prelude = yield* Prelude.Service;
+    const files = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
 
+    const open: Factory["open"] = Effect.fn("Notebook.open")(function* (artifactRoot) {
+      const rootScope = yield* Effect.scope;
+      const preludeSource = yield* prelude.get;
       const registry = yield* Ref.make(
         new Registry({
           notebooks: HashMap.empty(),
@@ -254,34 +256,25 @@ export const layer = (config: Config) =>
         );
 
       const removeArtifact = (directory: string) =>
-        pipe(
-          files.remove(directory, { recursive: true, force: true }),
-          Effect.ignore,
-        );
+        pipe(files.remove(directory, { recursive: true, force: true }), Effect.ignore);
 
       const createArtifact = Effect.fn("Notebook.artifact")(function* (
         id: NotebookId,
         name: string,
       ) {
-        const directory = paths.join(config.artifactRoot, id);
+        const directory = paths.join(artifactRoot, id);
         const path = paths.join(directory, "notebook.jsonl");
         yield* pipe(
-          files.makeDirectory(config.artifactRoot, {
+          files.makeDirectory(artifactRoot, {
             recursive: true,
             mode: 0o700,
           }),
           journalError,
         );
-        yield* pipe(
-          files.makeDirectory(directory, { mode: 0o700 }),
-          journalError,
-        );
+        yield* pipe(files.makeDirectory(directory, { mode: 0o700 }), journalError);
         return yield* pipe(
           Effect.gen(function* () {
-            yield* pipe(
-              files.writeFileString(path, "", { flag: "wx", mode: 0o600 }),
-              journalError,
-            );
+            yield* pipe(files.writeFileString(path, "", { flag: "wx", mode: 0o600 }), journalError);
             const artifact = new Artifact({
               directory,
               path,
@@ -378,7 +371,8 @@ export const layer = (config: Config) =>
           onNone: () => Effect.void,
           onSome: (value) =>
             pipe(
-              value.kernel.shutdown,
+              value.bridge.interrupt,
+              Effect.andThen(value.kernel.shutdown),
               Effect.ignore,
               Effect.andThen(Scope.close(value.scope, Exit.void)),
               Effect.ignore,
@@ -547,8 +541,8 @@ export const layer = (config: Config) =>
 
       const discover = Effect.fn("Notebook.discover")(function* () {
         const entries = yield* pipe(
-          files.makeDirectory(config.artifactRoot, { recursive: true, mode: 0o700 }),
-          Effect.andThen(files.readDirectory(config.artifactRoot)),
+          files.makeDirectory(artifactRoot, { recursive: true, mode: 0o700 }),
+          Effect.andThen(files.readDirectory(artifactRoot)),
           Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
           Effect.mapError((cause) => runtimeFailure("discover notebooks", cause)),
         );
@@ -558,7 +552,7 @@ export const layer = (config: Config) =>
         const discovered = yield* Effect.forEach(ids, (id) =>
           pipe(
             Effect.gen(function* () {
-              const directory = paths.join(config.artifactRoot, id);
+              const directory = paths.join(artifactRoot, id);
               const path = paths.join(directory, "notebook.jsonl");
               const [created, ...events] = yield* pipe(
                 files.readFileString(path),
@@ -643,10 +637,10 @@ export const layer = (config: Config) =>
         return yield* creation.withPermit(
           Effect.gen(function* () {
             const state = yield* Ref.get(registry);
-            if (state.live >= config.maxLiveNotebooks)
+            if (state.live >= config["max-live-notebooks"])
               return yield* runtimeFailure(
                 "create notebook",
-                `The live notebook limit of ${config.maxLiveNotebooks} has been reached`,
+                `The live notebook limit of ${config["max-live-notebooks"]} has been reached`,
               );
             const id = notebookId(`nb_${crypto.randomUUID()}`);
             const createdAt = yield* now;
@@ -657,9 +651,15 @@ export const layer = (config: Config) =>
             const scope = yield* Scope.fork(rootScope);
             const opened = yield* pipe(
               Effect.gen(function* () {
+                const bridge = yield* bridges.openNotebook(id);
                 const kernel = yield* kernels.open;
-                yield* kernel.initialize(preludeSource);
-                return kernel;
+                const source = pipe(
+                  [bridge.bootstrap, preludeSource],
+                  Arr.filter((value) => value !== ""),
+                  Arr.join("\n\n"),
+                );
+                yield* kernel.initialize(source);
+                return { bridge, kernel } as const;
               }),
               Scope.provide(scope),
               Effect.exit,
@@ -667,10 +667,7 @@ export const layer = (config: Config) =>
             if (Exit.isFailure(opened)) {
               yield* Scope.close(scope, Exit.void);
               yield* removeArtifact(artifact.directory);
-              return yield* runtimeFailure(
-                "start notebook kernel",
-                Cause.pretty(opened.cause),
-              );
+              return yield* runtimeFailure("start notebook kernel", Cause.pretty(opened.cause));
             }
             const notebook = yield* makeNotebook(
               id,
@@ -682,7 +679,7 @@ export const layer = (config: Config) =>
                 activeCellId: Option.none(),
                 updatedAt: createdAt,
               }),
-              Option.some(new Resources({ kernel: opened.value, scope })),
+              Option.some(new Resources({ ...opened.value, scope })),
             );
             yield* Ref.update(
               registry,
@@ -781,7 +778,7 @@ export const layer = (config: Config) =>
             const updates = yield* PubSub.subscribe(cell.output.updates);
             const deadline =
               (yield* Clock.currentTimeMillis) +
-              Math.max(0, Math.min(input.timeoutMillis, config.maxWaitMillis));
+              Math.max(0, Math.min(input.timeoutMillis, config["max-wait-ms"]));
 
             const consume = (
               cursor: CellOutput.Cursor,
@@ -839,15 +836,21 @@ export const layer = (config: Config) =>
 
       const interrupt = Effect.fn("Notebook.interrupt")(function* (cell: Cell, live: Resources) {
         yield* Ref.set(cell.interruptRequested, true);
-        const requested = yield* pipe(
-          live.kernel.interrupt,
-          Effect.as(true),
-          Effect.orElseSucceed(() => false),
+        const [requested] = yield* Effect.all(
+          [
+            pipe(
+              live.kernel.interrupt,
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            ),
+            live.bridge.interrupt,
+          ],
+          { concurrency: "unbounded" },
         );
         if (!requested) return Option.none<Terminal>();
         return yield* pipe(
           Deferred.await(cell.terminal),
-          Effect.timeoutOption(config.interruptGraceMillis),
+          Effect.timeoutOption(config["interrupt-grace-ms"]),
         );
       });
 
@@ -893,7 +896,10 @@ export const layer = (config: Config) =>
               runtimeFailure("stop notebook", "Busy notebook has no active cell"),
             )(state.activeCellId);
             const cell = yield* getCell(active);
-            if (!(yield* Deferred.isDone(cell.terminal)) && Option.isNone(yield* interrupt(cell, live)))
+            if (
+              !(yield* Deferred.isDone(cell.terminal)) &&
+              Option.isNone(yield* interrupt(cell, live))
+            )
               yield* pipe(
                 finish(
                   notebook,
@@ -918,20 +924,19 @@ export const layer = (config: Config) =>
         const normalizedName = Option.map(input.name, (name) => name.toLowerCase());
         return pipe(
           Ref.get(registry),
-          Effect.flatMap((state) =>
-            Effect.forEach(HashMap.values(state.notebooks), summary),
-          ),
+          Effect.flatMap((state) => Effect.forEach(HashMap.values(state.notebooks), summary)),
           Effect.map(Chunk.fromIterable),
           Effect.map(
-            Chunk.filter((notebook) =>
-              Option.match(normalizedName, {
-                onNone: () => true,
-                onSome: (name) => notebook.name.toLowerCase().includes(name),
-              }) &&
-              Option.match(input.status, {
-                onNone: () => true,
-                onSome: (status) => notebook.status === status,
-              }),
+            Chunk.filter(
+              (notebook) =>
+                Option.match(normalizedName, {
+                  onNone: () => true,
+                  onSome: (name) => notebook.name.toLowerCase().includes(name),
+                }) &&
+                Option.match(input.status, {
+                  onNone: () => true,
+                  onSome: (status) => notebook.status === status,
+                }),
             ),
           ),
         );
@@ -950,9 +955,12 @@ export const layer = (config: Config) =>
         ),
       );
 
-      return Service.of({ create, start, wait, stopCell, stopNotebook, list });
-    }),
-  );
+      return { create, start, wait, stopCell, stopNotebook, list };
+    });
+
+    return Service.of({ open });
+  }),
+);
 
 export * from "./types.ts";
 export * as Notebook from "./index.ts";

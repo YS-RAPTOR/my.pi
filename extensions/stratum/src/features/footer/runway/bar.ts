@@ -43,12 +43,8 @@ function severity(value: number): Severity {
 }
 
 function ansiRgb(ansi: string, channel: 38 | 48): Rgb | undefined {
-  const match = ansi.match(
-    new RegExp(`\\x1b\\[${channel};2;(\\d+);(\\d+);(\\d+)m`),
-  );
-  return match
-    ? [Number(match[1]), Number(match[2]), Number(match[3])]
-    : undefined;
+  const match = ansi.match(new RegExp(`\\x1b\\[${channel};2;(\\d+);(\\d+);(\\d+)m`));
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
 }
 
 function rgbBackground([red, green, blue]: Rgb): string {
@@ -63,10 +59,7 @@ function runwayBackground(theme: Theme, weekly: UsageWindow): string {
   const base = ansiRgb(theme.bg("toolSuccessBg", ""), 48);
   const tint = ansiRgb(theme.fg(state.color, ""), 38);
   if (!base || !tint) {
-    return theme
-      .fg(state.color, "")
-      .replace("[38;", "[48;")
-      .replace("\x1b[39m", "");
+    return theme.fg(state.color, "").replace("[38;", "[48;").replace("\x1b[39m", "");
   }
   const blend = (index: number) =>
     Math.round(base[index]! + (tint[index]! - base[index]!) * state.tint);
@@ -75,17 +68,13 @@ function runwayBackground(theme: Theme, weekly: UsageWindow): string {
 
 function steps(window: UsageWindow, count: number): number {
   const value = remaining(window);
-  return value <= 0
-    ? 0
-    : Math.max(1, Math.min(count, Math.round(value / (100 / count))));
+  return value <= 0 ? 0 : Math.max(1, Math.min(count, Math.round(value / (100 / count))));
 }
 
 function masks(report: UsageReport, count: number): number[] {
   const weekly = steps(report.weekly, count);
   if (!report.primary) {
-    return Array.from({ length: count }, (_, index) =>
-      index < weekly ? 15 : 0,
-    );
+    return Array.from({ length: count }, (_, index) => (index < weekly ? 15 : 0));
   }
   const primary = steps(report.primary, count);
   return Array.from(
@@ -104,18 +93,14 @@ function renderBar(
   const { brackets, groupSize } = STYLES[mode];
   const paint = (text: string, color: ThemeColor) =>
     theme.fg(color, `${background}${text}${RESET_BG}`);
-  const cells = values.map((mask) =>
-    paint(GLYPHS[mask] ?? GLYPHS[0], foreground),
-  );
+  const cells = values.map((mask) => paint(GLYPHS[mask] ?? GLYPHS[0], foreground));
   const groups = groupSize
     ? Array.from({ length: Math.ceil(cells.length / groupSize) }, (_, index) =>
         cells.slice(index * groupSize, (index + 1) * groupSize).join(""),
       )
     : [cells.join("")];
   const content = groups.join(paint("|", "thinkingOff"));
-  return brackets
-    ? `${theme.fg("muted", "[")}${content}${theme.fg("muted", "]")}`
-    : content;
+  return brackets ? `${theme.fg("muted", "[")}${content}${theme.fg("muted", "]")}` : content;
 }
 
 function formatResetCountdown(resetAt: number, now: number): string {
@@ -132,10 +117,7 @@ function formatResetCountdown(resetAt: number, now: number): string {
 }
 
 function countdown(window: UsageWindow, theme: Theme, now: number): string {
-  const text =
-    window.resetAt === undefined
-      ? "?"
-      : formatResetCountdown(window.resetAt, now);
+  const text = window.resetAt === undefined ? "?" : formatResetCountdown(window.resetAt, now);
   return theme.fg(severity(remaining(window)).color, text);
 }
 
@@ -159,11 +141,7 @@ export function renderReport(
     : `${weekly} ${renderedBar}`;
 }
 
-export function renderLoading(
-  theme: Theme,
-  mode: RunwayMode,
-  frame: number,
-): string {
+export function renderLoading(theme: Theme, mode: RunwayMode, frame: number): string {
   const count = STYLES[mode].steps;
   const cycle = (count - 1) * 2;
   const offset = Math.abs(Math.trunc(frame)) % cycle;

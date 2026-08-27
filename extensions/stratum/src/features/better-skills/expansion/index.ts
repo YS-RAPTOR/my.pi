@@ -16,8 +16,7 @@ import { Runtime } from "#s/features/better-skills/runtime";
 import { Shell } from "#s/features/better-skills/shell";
 import { Pi } from "@ys-raptor/pi-effect";
 
-const errorMessage = (cause: unknown) =>
-  cause instanceof Error ? cause.message : String(cause);
+const errorMessage = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
 const isTextContent = Schema.is(
   Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
@@ -53,9 +52,10 @@ export const layer = Layer.effectDiscard(
         Effect.orElseSucceed(() => path),
       );
 
-    const interpolate = Effect.fn(
-      "Features.BetterSkills.Expansion.interpolate",
-    )(function* (content: string, cwd: string) {
+    const interpolate = Effect.fn("Features.BetterSkills.Expansion.interpolate")(function* (
+      content: string,
+      cwd: string,
+    ) {
       const expanded = yield* Effect.reduce(
         content.matchAll(/!`([^`\n]+)`/g),
         () => ({ output: "", cursor: 0 }),
@@ -73,9 +73,7 @@ export const layer = Layer.effectDiscard(
                   ),
                 );
               }
-              return Effect.succeed(
-                (output === "(no output)" ? "" : output).trimEnd(),
-              );
+              return Effect.succeed((output === "(no output)" ? "" : output).trimEnd());
             }),
             Effect.mapError(
               (error) =>
@@ -85,10 +83,7 @@ export const layer = Layer.effectDiscard(
                 ),
             ),
             Effect.map((replacement) => ({
-              output:
-                state.output +
-                content.slice(state.cursor, match.index) +
-                replacement,
+              output: state.output + content.slice(state.cursor, match.index) + replacement,
               cursor: match.index + match[0].length,
             })),
           ),
@@ -96,9 +91,7 @@ export const layer = Layer.effectDiscard(
       return expanded.output + content.slice(expanded.cursor);
     });
 
-    yield* runtime.registerTransformer(({ body, cwd }) =>
-      interpolate(body, cwd),
-    );
+    yield* runtime.registerTransformer(({ body, cwd }) => interpolate(body, cwd));
 
     yield* interceptors.handle(
       "input",
@@ -117,18 +110,13 @@ export const layer = Layer.effectDiscard(
 
         return yield* pipe(
           Effect.gen(function* () {
-            const block = yield* runtime.render(
-              skill,
-              yield* callback.session.cwd,
-            );
+            const block = yield* runtime.render(skill, yield* callback.session.cwd);
             const skillArguments = arguments_?.trim();
             const result = {
               action: "transform" as const,
               text: skillArguments ? `${block}\n\n${skillArguments}` : block,
             };
-            return event.images === undefined
-              ? result
-              : { ...result, images: event.images };
+            return event.images === undefined ? result : { ...result, images: event.images };
           }),
           Effect.catch((error) =>
             Effect.gen(function* () {
@@ -143,87 +131,70 @@ export const layer = Layer.effectDiscard(
     yield* interceptors.handle(
       "tool_result",
       0,
-      Effect.fn("Features.BetterSkills.Expansion.toolResult")(
-        function* (event) {
-          const path = decodePath(event.input["path"]);
-          if (event.toolName !== "read" || Option.isNone(path)) return;
+      Effect.fn("Features.BetterSkills.Expansion.toolResult")(function* (event) {
+        const path = decodePath(event.input["path"]);
+        if (event.toolName !== "read" || Option.isNone(path)) return;
 
-          const host = yield* Pi.Host.Service;
-          const callback = yield* Pi.Host.Callback;
-          const cwd = yield* callback.session.cwd;
-          const requested = path.value.startsWith("@")
-            ? path.value.slice(1)
-            : path.value;
-          const expandedPath = requested.replace(/^~(?=\/|$)/, home);
-          const absolute = paths.resolve(cwd, expandedPath);
-          const canonical = yield* canonicalPath(absolute);
-          const skill = yield* Effect.findFirst(
-            yield* host.session.getCommands,
-            (command) => {
-              if (command.source !== "skill") return Effect.succeed(false);
-              const location = paths.resolve(command.sourceInfo.path);
-              return pipe(
-                canonicalPath(location),
-                Effect.map((candidate) => candidate === canonical),
-              );
-            },
+        const host = yield* Pi.Host.Service;
+        const callback = yield* Pi.Host.Callback;
+        const cwd = yield* callback.session.cwd;
+        const requested = path.value.startsWith("@") ? path.value.slice(1) : path.value;
+        const expandedPath = requested.replace(/^~(?=\/|$)/, home);
+        const absolute = paths.resolve(cwd, expandedPath);
+        const canonical = yield* canonicalPath(absolute);
+        const skill = yield* Effect.findFirst(yield* host.session.getCommands, (command) => {
+          if (command.source !== "skill") return Effect.succeed(false);
+          const location = paths.resolve(command.sourceInfo.path);
+          return pipe(
+            canonicalPath(location),
+            Effect.map((candidate) => candidate === canonical),
           );
-          if (Option.isNone(skill)) return;
+        });
+        if (Option.isNone(skill)) return;
 
-          return yield* pipe(
-            Effect.gen(function* () {
-              const source = yield* files.readFileString(
-                skill.value.sourceInfo.path,
-              );
-              const frontmatter = source.match(
-                /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/,
-              )?.[0];
-              const offset = Option.getOrElse(
-                decodeOffset(event.input["offset"]),
-                () => 1,
-              );
-              let remaining = Math.max(
-                0,
-                (frontmatter?.match(/\n/g)?.length ?? 0) - offset + 1,
-              );
-              const content: Array<unknown> = [];
+        return yield* pipe(
+          Effect.gen(function* () {
+            const source = yield* files.readFileString(skill.value.sourceInfo.path);
+            const frontmatter = source.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/)?.[0];
+            const offset = Option.getOrElse(decodeOffset(event.input["offset"]), () => 1);
+            let remaining = Math.max(0, (frontmatter?.match(/\n/g)?.length ?? 0) - offset + 1);
+            const content: Array<unknown> = [];
 
-              for (const item of event.content) {
-                if (!isTextContent(item)) {
-                  content.push(item);
-                  continue;
-                }
-
-                const skipped = skipLines(item.text, remaining);
-                remaining = skipped.remaining;
-                content.push({
-                  ...item,
-                  text:
-                    item.text.slice(0, skipped.start) +
-                    (yield* interpolate(item.text.slice(skipped.start), cwd)),
-                });
+            for (const item of event.content) {
+              if (!isTextContent(item)) {
+                content.push(item);
+                continue;
               }
 
-              return Pi.Hooks.Interceptors.ToolResultEventResult.make({
-                content,
+              const skipped = skipLines(item.text, remaining);
+              remaining = skipped.remaining;
+              content.push({
+                ...item,
+                text:
+                  item.text.slice(0, skipped.start) +
+                  (yield* interpolate(item.text.slice(skipped.start), cwd)),
               });
-            }),
-            Effect.catch((error) =>
-              Effect.succeed(
-                Pi.Hooks.Interceptors.ToolResultEventResult.make({
-                  content: [
-                    {
-                      type: "text",
-                      text: errorMessage(error),
-                    },
-                  ],
-                  isError: true,
-                }),
-              ),
+            }
+
+            return Pi.Hooks.Interceptors.ToolResultEventResult.make({
+              content,
+            });
+          }),
+          Effect.catch((error) =>
+            Effect.succeed(
+              Pi.Hooks.Interceptors.ToolResultEventResult.make({
+                content: [
+                  {
+                    type: "text",
+                    text: errorMessage(error),
+                  },
+                ],
+                isError: true,
+              }),
             ),
-          );
-        },
-      ),
+          ),
+        );
+      }),
     );
   }),
 );

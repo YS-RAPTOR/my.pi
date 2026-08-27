@@ -1,7 +1,7 @@
 import { Effect, Exit, Layer, Ref, Scope, Semaphore, pipe } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Config } from "#s/config";
 import { Hooks } from "@ys-raptor/pi-effect";
+import { Config } from "#s/config";
 
 type AgentState = "idle" | "running";
 
@@ -16,7 +16,7 @@ const reportAgentState = Effect.fn("Activity.__reportAgentState")(
     }),
 );
 
-const runtime = Layer.effectDiscard(
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const { activity: config } = yield* Config.Service;
     const barriers = yield* Hooks.Barriers.Service;
@@ -25,9 +25,7 @@ const runtime = Layer.effectDiscard(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const inhibitor = yield* Ref.make<Scope.Closeable | null>(null);
     const mutex = yield* Semaphore.make(1);
-    const report = config["terminal-reporting"]
-      ? reportAgentState
-      : () => Effect.void;
+    const report = config["terminal-reporting"] ? reportAgentState : () => Effect.void;
 
     const openInhibitor = Effect.fn("Activity.__openInhibitor")(function* () {
       const command = config["inhibit-command"];
@@ -56,11 +54,7 @@ const runtime = Layer.effectDiscard(
     });
 
     const setIdle = (attention = false) =>
-      pipe(
-        closeInhibitor(),
-        Effect.andThen(report("idle", attention)),
-        mutex.withPermit,
-      );
+      pipe(closeInhibitor(), Effect.andThen(report("idle", attention)), mutex.withPermit);
 
     yield* barriers.handle(
       "session_start",
@@ -106,13 +100,6 @@ const runtime = Layer.effectDiscard(
 
     yield* Effect.addFinalizer(() => setIdle());
   }),
-);
-
-export const layer = pipe(
-  Effect.map(Config.Service, ({ activity }) =>
-    activity.enabled ? runtime : Layer.empty,
-  ),
-  Layer.unwrap,
 );
 
 export * as Activity from "./index.ts";

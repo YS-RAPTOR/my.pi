@@ -25,9 +25,7 @@ export class Status extends Data.Class<{
   readonly signal: string | null;
 }> {}
 
-export class OperationFailed extends Data.TaggedError(
-  "ShellTmuxOperationFailed",
-)<{
+export class OperationFailed extends Data.TaggedError("ShellTmuxOperationFailed")<{
   readonly operation: string;
   readonly message: string;
 }> {}
@@ -39,24 +37,16 @@ export type Interface = Readonly<{
     command: string,
     env?: Readonly<Record<string, string | null>>,
   ) => Effect.Effect<Target, OperationFailed>;
-  capture: (
-    target: Target,
-    history: boolean,
-  ) => Effect.Effect<string, OperationFailed>;
+  capture: (target: Target, history: boolean) => Effect.Effect<string, OperationFailed>;
   status: (target: Target) => Effect.Effect<Status, OperationFailed>;
   write: (target: Target, text: string) => Effect.Effect<void, OperationFailed>;
-  sendKeys: (
-    target: Target,
-    keys: ReadonlyArray<string>,
-  ) => Effect.Effect<void, OperationFailed>;
+  sendKeys: (target: Target, keys: ReadonlyArray<string>) => Effect.Effect<void, OperationFailed>;
   wait: (target: Target) => Effect.Effect<void, OperationFailed>;
   kill: (target: Target) => Effect.Effect<void, OperationFailed>;
   remove: (target: Target) => Effect.Effect<void>;
 }>;
 
-export class Service extends Context.Service<Service, Interface>()(
-  "stratum/Features.Shell.Tmux",
-) {}
+export class Service extends Context.Service<Service, Interface>()("stratum/Features.Shell.Tmux") {}
 
 type Backend = Readonly<{
   socketName: string;
@@ -140,11 +130,7 @@ export const layer = Layer.effect(
       operation: string,
       ...arguments_: ReadonlyArray<string>
     ) {
-      return yield* execute(operation, "tmux", [
-        "-L",
-        current.socketName,
-        ...arguments_,
-      ]);
+      return yield* execute(operation, "tmux", ["-L", current.socketName, ...arguments_]);
     });
 
     const ensure = Effect.fn("Shell.Tmux.__ensure")(function* () {
@@ -222,21 +208,11 @@ export const layer = Layer.effect(
         }
         arguments_.push("bash", "-lc", command);
 
-        const paneId = (yield* invoke(
-          current,
-          "open shell resource",
-          ...arguments_,
-        )).stdout.trim();
+        const paneId = (yield* invoke(current, "open shell resource", ...arguments_)).stdout.trim();
         if (paneId.startsWith("%")) return new Target({ sessionId, paneId });
 
         yield* pipe(
-          invoke(
-            current,
-            "clean up invalid shell resource",
-            "kill-session",
-            "-t",
-            sessionId,
-          ),
+          invoke(current, "clean up invalid shell resource", "kill-session", "-t", sessionId),
           Effect.ignore,
         );
         return yield* new OperationFailed({
@@ -252,124 +228,93 @@ export const layer = Layer.effect(
         const arguments_ = history
           ? ["capture-pane", "-p", "-S", "-", "-E", "-", "-t", target.paneId]
           : ["capture-pane", "-p", "-t", target.paneId];
-        return (yield* invoke(
-          current,
-          "capture tmux pane",
-          ...arguments_,
-        )).stdout.trimEnd();
+        return (yield* invoke(current, "capture tmux pane", ...arguments_)).stdout.trimEnd();
       },
     );
 
-    const status: Interface["status"] = Effect.fn("Shell.Tmux.status")(
-      function* (target) {
-        const current = yield* ensure();
-        const result = yield* invoke(
-          current,
-          "inspect tmux pane",
-          "display-message",
-          "-p",
-          "-t",
-          target.paneId,
-          "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}",
-        );
-        const [dead = "0", exitCode = "", signal = ""] = result.stdout
-          .trim()
-          .split("\t");
-        return new Status({
-          dead: dead === "1",
-          exitCode:
-            exitCode === "" || !Number.isInteger(Number(exitCode))
-              ? null
-              : Number(exitCode),
-          signal: signalName(signal),
-        });
-      },
-    );
+    const status: Interface["status"] = Effect.fn("Shell.Tmux.status")(function* (target) {
+      const current = yield* ensure();
+      const result = yield* invoke(
+        current,
+        "inspect tmux pane",
+        "display-message",
+        "-p",
+        "-t",
+        target.paneId,
+        "#{pane_dead}\t#{pane_dead_status}\t#{pane_dead_signal}",
+      );
+      const [dead = "0", exitCode = "", signal = ""] = result.stdout.trim().split("\t");
+      return new Status({
+        dead: dead === "1",
+        exitCode: exitCode === "" || !Number.isInteger(Number(exitCode)) ? null : Number(exitCode),
+        signal: signalName(signal),
+      });
+    });
 
-    const write: Interface["write"] = Effect.fn("Shell.Tmux.write")(
-      function* (target, text) {
-        const current = yield* ensure();
-        yield* invoke(
-          current,
-          "write literal shell input",
-          "send-keys",
-          "-l",
-          "-t",
-          target.paneId,
-          "--",
-          text,
-        );
-      },
-    );
+    const write: Interface["write"] = Effect.fn("Shell.Tmux.write")(function* (target, text) {
+      const current = yield* ensure();
+      yield* invoke(
+        current,
+        "write literal shell input",
+        "send-keys",
+        "-l",
+        "-t",
+        target.paneId,
+        "--",
+        text,
+      );
+    });
 
     const sendKeys: Interface["sendKeys"] = Effect.fn("Shell.Tmux.sendKeys")(
       function* (target, keys) {
         const current = yield* ensure();
-        yield* invoke(
-          current,
-          "send shell keys",
-          "send-keys",
-          "-t",
-          target.paneId,
-          "--",
-          ...keys,
-        );
+        yield* invoke(current, "send shell keys", "send-keys", "-t", target.paneId, "--", ...keys);
       },
     );
 
-    const wait: Interface["wait"] = Effect.fn("Shell.Tmux.wait")(
-      function* (target) {
-        const current = yield* ensure();
-        yield* invoke(
-          current,
-          "wait for shell resource",
-          "if-shell",
-          "-F",
-          "-t",
-          target.paneId,
-          "#{pane_dead}",
-          "display-message",
-          `wait-for shell-exit-${target.paneId}`,
-        );
-      },
-    );
+    const wait: Interface["wait"] = Effect.fn("Shell.Tmux.wait")(function* (target) {
+      const current = yield* ensure();
+      yield* invoke(
+        current,
+        "wait for shell resource",
+        "if-shell",
+        "-F",
+        "-t",
+        target.paneId,
+        "#{pane_dead}",
+        "display-message",
+        `wait-for shell-exit-${target.paneId}`,
+      );
+    });
 
-    const kill: Interface["kill"] = Effect.fn("Shell.Tmux.kill")(
-      function* (target) {
-        const current = yield* ensure();
-        const pid = (yield* invoke(
-          current,
-          "inspect shell process group",
-          "display-message",
-          "-p",
-          "-t",
-          target.paneId,
-          "#{pane_pid}",
-        )).stdout.trim();
-        yield* execute("kill shell resource", "kill", [
-          "-KILL",
-          "--",
-          `-${pid}`,
-        ]);
-      },
-    );
+    const kill: Interface["kill"] = Effect.fn("Shell.Tmux.kill")(function* (target) {
+      const current = yield* ensure();
+      const pid = (yield* invoke(
+        current,
+        "inspect shell process group",
+        "display-message",
+        "-p",
+        "-t",
+        target.paneId,
+        "#{pane_pid}",
+      )).stdout.trim();
+      yield* execute("kill shell resource", "kill", ["-KILL", "--", `-${pid}`]);
+    });
 
-    const remove: Interface["remove"] = Effect.fn("Shell.Tmux.remove")(
-      function* (target) {
-        const current = yield* Ref.get(backend);
-        if (Option.isNone(current)) return;
-        yield* pipe(
-          invoke(
-            current.value,
-            "remove completed tmux session",
-            "kill-session",
-            "-t",
-            target.sessionId,
-          ),
-          Effect.ignore,
-        );
-      },
-    );
+    const remove: Interface["remove"] = Effect.fn("Shell.Tmux.remove")(function* (target) {
+      const current = yield* Ref.get(backend);
+      if (Option.isNone(current)) return;
+      yield* pipe(
+        invoke(
+          current.value,
+          "remove completed tmux session",
+          "kill-session",
+          "-t",
+          target.sessionId,
+        ),
+        Effect.ignore,
+      );
+    });
 
     yield* Effect.addFinalizer(
       Effect.fn("Shell.Tmux.shutdown")(function* () {

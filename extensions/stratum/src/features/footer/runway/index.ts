@@ -16,12 +16,7 @@ import {
 } from "effect";
 import { Config } from "#s/config";
 import type { FooterVariant } from "../parts.ts";
-import {
-  renderLoading,
-  renderProblem,
-  renderReport,
-  type RunwayMode,
-} from "./bar.ts";
+import { renderLoading, renderProblem, renderReport, type RunwayMode } from "./bar.ts";
 import {
   isCodexContext,
   queryUsage,
@@ -45,10 +40,7 @@ type State = Readonly<{
 }>;
 
 export type Interface = Readonly<{
-  enable: (
-    context: RunwayContext,
-    requestRender: () => void,
-  ) => Effect.Effect<void>;
+  enable: (context: RunwayContext, requestRender: () => void) => Effect.Effect<void>;
   variants: (theme: Theme) => ReadonlyArray<FooterVariant>;
   disable: Effect.Effect<void>;
 }>;
@@ -119,10 +111,7 @@ export const layer = Layer.effect(
           Effect.matchEffect({
             onFailure: (error) =>
               SynchronizedRef.update(state, (latest) => {
-                const failedRefreshes = Predicate.isTagged(
-                  latest.display,
-                  "report",
-                )
+                const failedRefreshes = Predicate.isTagged(latest.display, "report")
                   ? latest.display.failedRefreshes + 1
                   : config["cached-failure-limit"];
                 return {
@@ -167,10 +156,7 @@ export const layer = Layer.effect(
 
     const variants: Interface["variants"] = (theme) => {
       const current = SynchronizedRef.getUnsafe(state);
-      if (
-        Option.isNone(current.context) ||
-        !isCodexContext(current.context.value)
-      ) {
+      if (Option.isNone(current.context) || !isCodexContext(current.context.value)) {
         return [];
       }
       const loading = Predicate.isTagged(current.display, "loading");
@@ -195,8 +181,7 @@ export const layer = Layer.effect(
           id: "elastic",
           minWidth: 1,
           preferredWidth: visibleWidth(compact),
-          render: (width) =>
-            truncateToWidth(compact, width, theme.fg("dim", "…")),
+          render: (width) => truncateToWidth(compact, width, theme.fg("dim", "…")),
         },
       ];
     };
@@ -212,9 +197,7 @@ export const layer = Layer.effect(
 
     yield* pipe(
       refresh(),
-      Effect.schedule(
-        Schedule.spaced(Duration.millis(config["refresh-interval-ms"])),
-      ),
+      Effect.schedule(Schedule.spaced(Duration.millis(config["refresh-interval-ms"]))),
       Effect.ignore,
       Effect.forkScoped,
     );

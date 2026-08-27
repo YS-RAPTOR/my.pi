@@ -80,11 +80,7 @@ const preload = (languages: ReadonlyArray<string>) =>
 const ensure = (condition: boolean, operation: string, message: string) =>
   condition ? Effect.void : Effect.fail(failed(operation, message));
 
-const highlights = (
-  spans: ReadonlyArray<Span>,
-  start = 0,
-  end = Number.POSITIVE_INFINITY,
-) => {
+const highlights = (spans: ReadonlyArray<Span>, start = 0, end = Number.POSITIVE_INFINITY) => {
   const output: Array<Highlight> = [];
   for (const span of spans) {
     const startIndex = Math.max(start, span.startIndex);
@@ -108,10 +104,7 @@ const difference = (
   let changedEnd = start;
 
   while (position < end) {
-    while (
-      previous[previousIndex] !== undefined &&
-      previous[previousIndex]!.endIndex <= position
-    )
+    while (previous[previousIndex] !== undefined && previous[previousIndex]!.endIndex <= position)
       previousIndex++;
     while (next[nextIndex] !== undefined && next[nextIndex]!.endIndex <= position) nextIndex++;
     const left = previous[previousIndex];
@@ -136,12 +129,7 @@ const difference = (
     : { start: changedStart, end: changedEnd };
 };
 
-const apply = (
-  rendered: RenderResult,
-  source: string,
-  spans: Array<Span>,
-  foreground: number,
-) => {
+const apply = (rendered: RenderResult, source: string, spans: Array<Span>, foreground: number) => {
   let frameStart = Number.POSITIVE_INFINITY;
   let frameEnd = 0;
 
@@ -304,8 +292,7 @@ export const layer = Layer.effect(
     const initial = Arr.fromIterable(preloaded);
 
     yield* Effect.try({
-      try: () =>
-        configure(treeSitter["cache-directory"], [...treeSitter["parser-directories"]]),
+      try: () => configure(treeSitter["cache-directory"], [...treeSitter["parser-directories"]]),
       catch: (cause) => failed("configure Tree-sitter", cause),
     });
     const loading = yield* pipe(preload(initial), Effect.forkScoped);

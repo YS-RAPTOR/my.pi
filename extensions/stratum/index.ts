@@ -1,37 +1,93 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NodeServices } from "@effect/platform-node";
 import { Effect, Layer, ManagedRuntime, pipe } from "effect";
+import { Pi } from "@ys-raptor/pi-effect";
 import { Config } from "#s/config";
 import { Activity } from "#s/features/activity";
 import { BetterSkills } from "#s/features/better-skills";
 import { Commands } from "#s/features/commands";
 import { Footer } from "#s/features/footer";
 import { Rewriters } from "#s/features/rewriters";
+import { Search } from "#s/features/search";
 import { Shell } from "#s/features/shell";
-import { Pi } from "@ys-raptor/pi-effect";
 
 const platform = NodeServices.layer;
 
+const configured = <A, E, R>(make: (config: Config.Value) => Layer.Layer<A, E, R>) =>
+  Layer.unwrap(pipe(Config.Service, Effect.map(make)));
+
 export const layer = (pi: ExtensionAPI) => {
+  const config = pipe(Config.layer, Layer.provide(platform));
   const dependencies = Layer.mergeAll(
     platform,
-    pipe(Config.layer, Layer.provide(platform)),
+    config,
     Pi.Host.layer(pi),
     Pi.Contributions.layer,
     Pi.Hooks.layer,
     Rewriters.Register.layer,
   );
-  const activity = pipe(Activity.layer, Layer.provide(dependencies));
-  const shell = pipe(Shell.layer, Layer.provide(dependencies));
-  return Layer.mergeAll(
-    dependencies,
-    pipe(BetterSkills.layer, Layer.provide(dependencies)),
-    pipe(Commands.layer, Layer.provide(dependencies)),
-    activity,
-    pipe(Footer.layer, Layer.provide(dependencies)),
-    pipe(Layer.mergeAll(Rewriters.Clarify.layer, Rewriters.layer), Layer.provide(dependencies)),
-    shell,
+
+  const activity = configured(({ activity }) => (activity.enabled ? Activity.layer : Layer.empty));
+
+  const betterSkills = configured(({ "better-skills": settings }) => {
+    if (!settings.enabled) return Layer.empty;
+    const runtime = BetterSkills.Runtime.layer;
+    const gating = pipe(
+      BetterSkills.Gating.layer,
+      Layer.provide(BetterSkills.Gating.Catalog.layer),
+    );
+    const features = pipe(
+      Layer.mergeAll(
+        settings.expansion ? BetterSkills.Expansion.layer : Layer.empty,
+        settings.gating ? gating : Layer.empty,
+        settings.inline ? BetterSkills.Inline.layer : Layer.empty,
+      ),
+      Layer.provide(runtime),
+    );
+    return Layer.merge(runtime, features);
+  });
+
+  const commands = configured(({ commands }) =>
+    commands.enabled && commands.stretch.enabled ? Commands.Stretch.layer : Layer.empty,
   );
+
+  const footer = configured(({ footer }) =>
+    footer.enabled
+      ? pipe(
+          Footer.layer,
+          Layer.provide(footer.runway.enabled ? Footer.Runway.layer : Footer.Runway.disabledLayer),
+        )
+      : Layer.empty,
+  );
+
+  const rewriters = configured(({ rewriters }) =>
+    rewriters.enabled
+      ? Layer.merge(Rewriters.layer, rewriters.clarify ? Rewriters.Clarify.layer : Layer.empty)
+      : Layer.empty,
+  );
+
+  const search = configured(({ search }) => {
+    if (!search.enabled) return Layer.empty;
+    const service = pipe(Search.SearchService.layer, Layer.provide(Search.Fff.layer));
+    return Layer.mergeAll(
+      service,
+      pipe(Search.Autocomplete.layer, Layer.provide(service)),
+      pipe(Search.Commands.layer, Layer.provide(service)),
+    );
+  });
+
+  const shell = configured(({ shell }) => {
+    if (!shell.enabled) return Layer.empty;
+    const shellDependencies = Layer.merge(Shell.Store.layer, Shell.Tmux.layer);
+    const service = pipe(Shell.serviceLayer, Layer.provide(shellDependencies));
+    return Layer.merge(shellDependencies, service);
+  });
+
+  const features = pipe(
+    Layer.mergeAll(activity, betterSkills, commands, footer, rewriters, search, shell),
+    Layer.provide(dependencies),
+  );
+  return Layer.merge(dependencies, features);
 };
 
 const Stratum = async (pi: ExtensionAPI): Promise<void> => {
@@ -47,10 +103,11 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 
 export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
+export { BetterSkills } from "#s/features/better-skills";
 export { Commands } from "#s/features/commands";
-export { Search } from "#s/features/search";
 export { Footer } from "#s/features/footer";
 export { Rewriters } from "#s/features/rewriters";
+export { Search } from "#s/features/search";
 export { Shell } from "#s/features/shell";
 export { Pi } from "@ys-raptor/pi-effect";
 export default Stratum;

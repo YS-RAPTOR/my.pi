@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { Effect, Layer, Ref, Semaphore, pipe } from "effect";
-import { Config } from "#s/config";
+import { Effect, Layer, Ref, Semaphore } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
+import { Config } from "#s/config";
 
 type Model = NonNullable<ExtensionCommandContext["model"]>;
 
@@ -13,7 +13,7 @@ type ActiveStretch = Readonly<{
 
 const formatTokens = (tokens: number): string => `${tokens.toLocaleString("en-US")} tokens`;
 
-const runtime = Layer.effectDiscard(
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const { stretch: config } = (yield* Config.Service).commands;
     const contributions = yield* Pi.Contributions.Service;
@@ -110,13 +110,6 @@ const runtime = Layer.effectDiscard(
 
     yield* Effect.addFinalizer(reset);
   }),
-);
-
-export const layer = pipe(
-  Effect.map(Config.Service, ({ commands }) =>
-    commands.enabled && commands.stretch.enabled ? runtime : Layer.empty,
-  ),
-  Layer.unwrap,
 );
 
 export * as Stretch from "./stretch.ts";

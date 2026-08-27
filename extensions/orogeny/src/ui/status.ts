@@ -1,8 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import {
-  truncateToWidth,
-  type Component,
-} from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 
 export type StatusPhase = "streaming" | "running" | "done" | "error";
 export type StatusColor = "warning" | "accent" | "success" | "error";
@@ -21,8 +18,7 @@ const appearances = {
   Record<StatusPhase, Readonly<{ marker: string; color: StatusColor }>>
 >;
 
-export const statusColor = (phase: StatusPhase): StatusColor =>
-  appearances[phase].color;
+export const statusColor = (phase: StatusPhase): StatusColor => appearances[phase].color;
 
 export class Status implements Component {
   private readonly theme: Theme;

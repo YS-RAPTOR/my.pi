@@ -79,9 +79,7 @@ export type FindByPathInput = Readonly<{
 export type Interface = Readonly<{
   evaluate: (input: EvaluateInput) => Effect.Effect<Snapshot>;
   reload: (input: EvaluateInput) => Effect.Effect<Snapshot>;
-  findByPath: (
-    input: FindByPathInput,
-  ) => Effect.Effect<Option.Option<Decision>>;
+  findByPath: (input: FindByPathInput) => Effect.Effect<Option.Option<Decision>>;
   clear: Effect.Effect<void>;
 }>;
 
@@ -130,104 +128,97 @@ export const layer = Layer.effect(
         note: options.note ?? Option.none(),
       });
 
-    const evaluateCondition = Effect.fn(
-      "Features.BetterSkills.Gating.Catalog.__evaluateCondition",
-    )(function* (command: string, cwd: string) {
-      const execution = yield* pipe(
-        Shell.run(processes, command, cwd),
-        Effect.timeout(Duration.millis(commandTimeoutMs)),
-        Effect.result,
-      );
-      if (Result.isFailure(execution)) {
-        if (Cause.isTimeoutError(execution.failure)) {
-          return yield* execution.failure;
+    const evaluateCondition = Effect.fn("Features.BetterSkills.Gating.Catalog.__evaluateCondition")(
+      function* (command: string, cwd: string) {
+        const execution = yield* pipe(
+          Shell.run(processes, command, cwd),
+          Effect.timeout(Duration.millis(commandTimeoutMs)),
+          Effect.result,
+        );
+        if (Result.isFailure(execution)) {
+          if (Cause.isTimeoutError(execution.failure)) {
+            return yield* execution.failure;
+          }
+          return condition(false, {
+            command: Option.some(command),
+            note: Option.some(
+              execution.failure instanceof globalThis.Error
+                ? execution.failure.message
+                : String(execution.failure),
+            ),
+          });
         }
-        return condition(false, {
+        const [output, exitCode] = execution.success;
+        if (exitCode !== 0) {
+          const detail = output === "" ? "(no output)" : output;
+          return condition(false, {
+            command: Option.some(command),
+            note: Option.some(`${detail}\n\nCommand exited with code ${exitCode}`),
+          });
+        }
+        const normalized = output === "(no output)" ? "" : output;
+        return condition(normalized.trim() === "true", {
           command: Option.some(command),
-          note: Option.some(
-            execution.failure instanceof globalThis.Error
-              ? execution.failure.message
-              : String(execution.failure),
-          ),
+          output: Option.some(normalized),
         });
-      }
-      const [output, exitCode] = execution.success;
-      if (exitCode !== 0) {
-        const detail = output === "" ? "(no output)" : output;
-        return condition(false, {
-          command: Option.some(command),
-          note: Option.some(
-            `${detail}\n\nCommand exited with code ${exitCode}`,
-          ),
-        });
-      }
-      const normalized = output === "(no output)" ? "" : output;
-      return condition(normalized.trim() === "true", {
-        command: Option.some(command),
-        output: Option.some(normalized),
-      });
-    });
+      },
+    );
 
-    const evaluateSkill = Effect.fn(
-      "Features.BetterSkills.Gating.Catalog.__evaluateSkill",
-    )(function* (skill: SkillRef, frontmatter: Frontmatter, cwd: string) {
-      const availableIf = frontmatter["available-if"];
-      const availability = Option.isSome(availableIf)
-        ? yield* evaluateCondition(availableIf.value, cwd)
-        : condition(true);
+    const evaluateSkill = Effect.fn("Features.BetterSkills.Gating.Catalog.__evaluateSkill")(
+      function* (skill: SkillRef, frontmatter: Frontmatter, cwd: string) {
+        const availableIf = frontmatter["available-if"];
+        const availability = Option.isSome(availableIf)
+          ? yield* evaluateCondition(availableIf.value, cwd)
+          : condition(true);
 
-      if (!availability.passed) {
+        if (!availability.passed) {
+          return new Decision({
+            skill,
+            state: "unavailable",
+            availability,
+            modelInvocation: condition(false, {
+              command: frontmatter["model-invocation-if"],
+              note: Option.some("available-if did not pass"),
+            }),
+          });
+        }
+
+        if (frontmatter["disable-model-invocation"]) {
+          return new Decision({
+            skill,
+            state: "user-only",
+            availability,
+            modelInvocation: condition(false, {
+              command: frontmatter["model-invocation-if"],
+              note: Option.some("disable-model-invocation is true"),
+            }),
+          });
+        }
+
+        const modelInvocationIf = frontmatter["model-invocation-if"];
+        const modelInvocation = Option.isSome(modelInvocationIf)
+          ? yield* evaluateCondition(modelInvocationIf.value, cwd)
+          : condition(true);
+
         return new Decision({
           skill,
-          state: "unavailable",
+          state: modelInvocation.passed ? "model-accessible" : "user-only",
           availability,
-          modelInvocation: condition(false, {
-            command: frontmatter["model-invocation-if"],
-            note: Option.some("available-if did not pass"),
-          }),
+          modelInvocation,
         });
-      }
-
-      if (frontmatter["disable-model-invocation"]) {
-        return new Decision({
-          skill,
-          state: "user-only",
-          availability,
-          modelInvocation: condition(false, {
-            command: frontmatter["model-invocation-if"],
-            note: Option.some("disable-model-invocation is true"),
-          }),
-        });
-      }
-
-      const modelInvocationIf = frontmatter["model-invocation-if"];
-      const modelInvocation = Option.isSome(modelInvocationIf)
-        ? yield* evaluateCondition(modelInvocationIf.value, cwd)
-        : condition(true);
-
-      return new Decision({
-        skill,
-        state: modelInvocation.passed ? "model-accessible" : "user-only",
-        availability,
-        modelInvocation,
-      });
-    });
+      },
+    );
 
     const cache = yield* Cache.make<CacheKey, Decision>({
       capacity: Number.POSITIVE_INFINITY,
       lookup: ({ cwd, skill }) =>
         pipe(
           files.readFileString(skill.filePath),
-          Effect.flatMap((source) =>
-            Effect.try(() => parseFrontmatter(source).frontmatter),
-          ),
+          Effect.flatMap((source) => Effect.try(() => parseFrontmatter(source).frontmatter)),
           Effect.flatMap(decodeFrontmatter),
-          Effect.flatMap((frontmatter) =>
-            evaluateSkill(skill, frontmatter, cwd),
-          ),
+          Effect.flatMap((frontmatter) => evaluateSkill(skill, frontmatter, cwd)),
           Effect.catch((error) => {
-            const detail =
-              error instanceof globalThis.Error ? error.message : String(error);
+            const detail = error instanceof globalThis.Error ? error.message : String(error);
             const note = `skill file could not be read or parsed: ${detail}`;
             return Effect.succeed(
               new Decision({
@@ -264,16 +255,16 @@ export const layer = Layer.effect(
       return snapshot;
     });
 
-    const reload: Interface["reload"] = Effect.fn(
-      "Features.BetterSkills.Gating.Catalog.reload",
-    )(function* (input) {
-      yield* Effect.forEach(
-        input.skills,
-        (skill) => Cache.invalidate(cache, cacheKey(input.cwd, skill)),
-        { discard: true },
-      );
-      return yield* evaluate(input);
-    });
+    const reload: Interface["reload"] = Effect.fn("Features.BetterSkills.Gating.Catalog.reload")(
+      function* (input) {
+        yield* Effect.forEach(
+          input.skills,
+          (skill) => Cache.invalidate(cache, cacheKey(input.cwd, skill)),
+          { discard: true },
+        );
+        return yield* evaluate(input);
+      },
+    );
 
     const findByPath: Interface["findByPath"] = Effect.fn(
       "Features.BetterSkills.Gating.Catalog.findByPath",
@@ -282,19 +273,15 @@ export const layer = Layer.effect(
       if (snapshot === undefined || snapshot.cwd !== input.cwd) {
         return Option.none();
       }
-      const requested = input.path.startsWith("@")
-        ? input.path.slice(1)
-        : input.path;
+      const requested = input.path.startsWith("@") ? input.path.slice(1) : input.path;
       const canonical = yield* canonicalPath(
         paths.resolve(input.cwd, requested.replace(/^~(?=\/|$)/, home)),
       );
-      return yield* Effect.findFirst(
-        Arr.reverse(snapshot.decisions),
-        (decision) =>
-          pipe(
-            canonicalPath(decision.skill.filePath),
-            Effect.map((path) => path === canonical),
-          ),
+      return yield* Effect.findFirst(Arr.reverse(snapshot.decisions), (decision) =>
+        pipe(
+          canonicalPath(decision.skill.filePath),
+          Effect.map((path) => path === canonical),
+        ),
       );
     });
 

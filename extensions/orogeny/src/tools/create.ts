@@ -88,9 +88,7 @@ export const layer = Layer.effectDiscard(
       ) =>
         Effect.gen(function* () {
           const notebooks = yield* sessions.notebook;
-          const summary = yield* notebooks.create(
-            new Notebook.CreateInput({ name: input.name }),
-          );
+          const summary = yield* notebooks.create(new Notebook.CreateInput({ name: input.name }));
           const details: Details = {
             notebookId: summary.id,
             name: input.name,

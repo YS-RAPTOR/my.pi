@@ -1,6 +1,5 @@
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import { Array as Arr, Data, Effect, Exit, HashMap, Layer, Match, pipe } from "effect";
-import { Config } from "#s/config";
 import { Pi } from "@ys-raptor/pi-effect";
 import * as Registry from "./register.ts";
 
@@ -21,7 +20,7 @@ const parse = (input: string) => {
   return { matched: matches.length > 0, names, text: text.trim() };
 };
 
-const runtime = Layer.effectDiscard(
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const registry = yield* Registry.Service;
     const barriers = yield* Pi.Hooks.Barriers.Service;
@@ -155,11 +154,6 @@ const runtime = Layer.effectDiscard(
       }),
     );
   }),
-);
-
-export const layer = pipe(
-  Effect.map(Config.Service, ({ rewriters }) => (rewriters.enabled ? runtime : Layer.empty)),
-  Layer.unwrap,
 );
 
 export * as Clarify from "./clarify.ts";

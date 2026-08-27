@@ -37,9 +37,7 @@ export class ResourceNotFound extends Data.TaggedError("ResourceNotFound")<{
   readonly resourceId: string;
 }> {}
 
-export class OperationFailed extends Data.TaggedError(
-  "ShellStoreOperationFailed",
-)<{
+export class OperationFailed extends Data.TaggedError("ShellStoreOperationFailed")<{
   readonly operation: string;
   readonly message: string;
 }> {}
@@ -76,9 +74,7 @@ export type Interface = Readonly<{
     visible: string,
     history: string,
   ) => Effect.Effect<Completed, OperationFailed>;
-  artifact: (
-    resource: Completed,
-  ) => Effect.Effect<CompletionArtifact, OperationFailed>;
+  artifact: (resource: Completed) => Effect.Effect<CompletionArtifact, OperationFailed>;
 }>;
 
 export class Service extends Context.Service<Service, Interface>()(
@@ -102,9 +98,7 @@ const ArtifactPayload = Schema.Struct({
   history: Schema.String,
 });
 
-const decodeArtifact = Schema.decodeUnknownSync(
-  Schema.fromJsonString(ArtifactPayload),
-);
+const decodeArtifact = Schema.decodeUnknownSync(Schema.fromJsonString(ArtifactPayload));
 
 export const layer = Layer.effect(
   Service,
@@ -112,12 +106,8 @@ export const layer = Layer.effect(
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
     const directoryLock = yield* Semaphore.make(1);
-    const artifactDirectory = yield* Ref.make<Option.Option<string>>(
-      Option.none(),
-    );
-    const resources = yield* Ref.make<HashMap.HashMap<string, Resource>>(
-      HashMap.empty(),
-    );
+    const artifactDirectory = yield* Ref.make<Option.Option<string>>(Option.none());
+    const resources = yield* Ref.make<HashMap.HashMap<string, Resource>>(HashMap.empty());
 
     const directory = Effect.fn("Shell.Store.__directory")(function* () {
       return yield* directoryLock.withPermit(
@@ -144,21 +134,16 @@ export const layer = Layer.effect(
     const register: Interface["register"] = Effect.fn("Shell.Store.register")(
       function* (metadata, target) {
         const resource = Resource.running({ metadata, target });
-        yield* Ref.update(
-          resources,
-          HashMap.set<string, Resource>(metadata.resourceId, resource),
-        );
+        yield* Ref.update(resources, HashMap.set<string, Resource>(metadata.resourceId, resource));
         return resource;
       },
     );
 
-    const get: Interface["get"] = Effect.fn("Shell.Store.get")(
-      function* (resourceId) {
-        const resource = HashMap.get(yield* Ref.get(resources), resourceId);
-        if (Option.isSome(resource)) return resource.value;
-        return yield* new ResourceNotFound({ resourceId });
-      },
-    );
+    const get: Interface["get"] = Effect.fn("Shell.Store.get")(function* (resourceId) {
+      const resource = HashMap.get(yield* Ref.get(resources), resourceId);
+      if (Option.isSome(resource)) return resource.value;
+      return yield* new ResourceNotFound({ resourceId });
+    });
 
     const entries: Interface["entries"] = pipe(
       Ref.get(resources),
@@ -166,57 +151,46 @@ export const layer = Layer.effect(
       Effect.withSpan("Shell.Store.entries"),
     );
 
-    const artifact: Interface["artifact"] = Effect.fn("Shell.Store.artifact")(
-      function* (resource) {
-        return yield* pipe(
-          files.readFileString(resource.artifactPath),
-          Effect.flatMap((source) =>
-            Effect.try({
-              try: () => {
-                const decoded = decodeArtifact(source);
-                return new CompletionArtifact({
-                  inspection: new Inspection(decoded.inspection),
-                  visible: decoded.visible,
-                  history: decoded.history,
-                });
-              },
-              catch: (cause) =>
-                new OperationFailed({
-                  operation: "decode completed shell artifact",
-                  message: messageFrom(cause),
-                }),
-            }),
-          ),
-          Effect.mapError((cause) =>
-            Predicate.isTagged(cause, "ShellStoreOperationFailed")
-              ? cause
-              : new OperationFailed({
-                  operation: "read completed shell artifact",
-                  message: messageFrom(cause),
-                }),
-          ),
-        );
-      },
-    );
+    const artifact: Interface["artifact"] = Effect.fn("Shell.Store.artifact")(function* (resource) {
+      return yield* pipe(
+        files.readFileString(resource.artifactPath),
+        Effect.flatMap((source) =>
+          Effect.try({
+            try: () => {
+              const decoded = decodeArtifact(source);
+              return new CompletionArtifact({
+                inspection: new Inspection(decoded.inspection),
+                visible: decoded.visible,
+                history: decoded.history,
+              });
+            },
+            catch: (cause) =>
+              new OperationFailed({
+                operation: "decode completed shell artifact",
+                message: messageFrom(cause),
+              }),
+          }),
+        ),
+        Effect.mapError((cause) =>
+          Predicate.isTagged(cause, "ShellStoreOperationFailed")
+            ? cause
+            : new OperationFailed({
+                operation: "read completed shell artifact",
+                message: messageFrom(cause),
+              }),
+        ),
+      );
+    });
 
     const complete: Interface["complete"] = Effect.fn("Shell.Store.complete")(
       function* (resource, inspection, visible, history) {
-        const current = HashMap.get(
-          yield* Ref.get(resources),
-          resource.metadata.resourceId,
-        );
-        if (
-          Option.isSome(current) &&
-          Resource.$is("completed")(current.value)
-        ) {
+        const current = HashMap.get(yield* Ref.get(resources), resource.metadata.resourceId);
+        if (Option.isSome(current) && Resource.$is("completed")(current.value)) {
           return current.value;
         }
 
         const root = yield* directory();
-        const artifactPath = paths.join(
-          root,
-          `${resource.metadata.resourceId}.json`,
-        );
+        const artifactPath = paths.join(root, `${resource.metadata.resourceId}.json`);
         const temporaryPath = `${artifactPath}.${globalThis.crypto.randomUUID()}.tmp`;
         const value = new CompletionArtifact({ inspection, visible, history });
         yield* pipe(
@@ -240,10 +214,7 @@ export const layer = Layer.effect(
         });
         yield* Ref.update(
           resources,
-          HashMap.set<string, Resource>(
-            resource.metadata.resourceId,
-            completed,
-          ),
+          HashMap.set<string, Resource>(resource.metadata.resourceId, completed),
         );
         return completed;
       },
