@@ -1,7 +1,8 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { MixedItem } from "@ff-labs/fff-node";
-import { Array as Arr, Effect, Layer, Match, pipe } from "effect";
+import { Array as Arr, Effect, Layer, Match, Option, pipe } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
+import { Config } from "#s/config";
 import * as Search from "./service.ts";
 
 const completionItems = (
@@ -35,19 +36,30 @@ const completionItems = (
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const search = yield* Search.Service;
+    const config = (yield* Config.Service).search;
     const barriers = yield* Pi.Hooks.Barriers.Service;
     const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+    const triggerCharacters = pipe(
+      [
+        config.projectAutocomplete ? Option.some("@") : Option.none(),
+        config.homeAutocomplete ? Option.some("~") : Option.none(),
+      ],
+      Arr.getSomes,
+    );
 
     yield* barriers.handle(
       "session_start",
       Effect.fn("Features.Search.Autocomplete.sessionStarted")(function* () {
+        if (triggerCharacters.length === 0) return;
         const callback = yield* Pi.Host.Callback;
         const context = yield* Pi.Host.CallbackContext;
         yield* pipe(
           search.initialize(context.cwd),
           Effect.andThen(
             callback.ui.addAutocompleteProvider((current) => ({
-              triggerCharacters: [...new Set([...(current.triggerCharacters ?? []), "@", "~"])],
+              triggerCharacters: [
+                ...new Set([...(current.triggerCharacters ?? []), ...triggerCharacters]),
+              ],
               async getSuggestions(lines, line, column, options) {
                 const prefix =
                   (lines[line] ?? "")
@@ -57,6 +69,12 @@ export const layer = Layer.effectDiscard(
                   return current.getSuggestions(lines, line, column, options);
                 }
                 const marker = prefix.startsWith("@") ? "@" : "~";
+                const enabled = pipe(
+                  Match.value(marker),
+                  Match.when("@", () => config.projectAutocomplete),
+                  Match.orElse(() => config.homeAutocomplete),
+                );
+                if (!enabled) return current.getSuggestions(lines, line, column, options);
                 const query = prefix.slice(1).replace(/^\/?"?/, "");
                 const fallback = Effect.tryPromise(() =>
                   current.getSuggestions(lines, line, column, options),
@@ -86,9 +104,10 @@ export const layer = Layer.effectDiscard(
                 );
               },
               applyCompletion(lines, line, column, item, prefix) {
-                if (!prefix.startsWith("@") && !prefix.startsWith("~")) {
-                  return current.applyCompletion(lines, line, column, item, prefix);
-                }
+                const enabled =
+                  (config.projectAutocomplete && prefix.startsWith("@")) ||
+                  (config.homeAutocomplete && prefix.startsWith("~"));
+                if (!enabled) return current.applyCompletion(lines, line, column, item, prefix);
                 const currentLine = lines[line] ?? "";
                 const next = `${currentLine.slice(0, column - prefix.length)}${item.value}${currentLine.slice(column)}`;
                 return {

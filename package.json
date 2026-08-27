@@ -31,6 +31,7 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "allowScripts": {
+    "github:YS-RAPTOR/splice#9897c8a883e535eb0d0bf4bb077b3ec5d77c1d14": true,
     "github:YS-RAPTOR/stream-sitter#20843b47220ab5b2c69c58a80361e160fef8604f": true
   },
   "pi": {

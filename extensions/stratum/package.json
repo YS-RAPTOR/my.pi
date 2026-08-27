@@ -6,6 +6,9 @@
     "pi-package"
   ],
   "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
   "imports": {
     "#s/*": "./src/*.ts",
     "#s/features/*": "./src/features/*/index.ts"

@@ -16,6 +16,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
+import { Mcp } from "#o/mcp";
 import { Notebook } from "#o/notebook";
 import { PiTools } from "#o/pi";
 
@@ -61,6 +62,7 @@ export const layer = Layer.effect(
     const paths = yield* Path.Path;
     const barriers = yield* Pi.Hooks.Barriers.Service;
     const notebooks = yield* Notebook.Service;
+    const mcp = yield* Mcp.Service;
     const piTools = yield* PiTools.Service;
     const rootScope = yield* Effect.scope;
     const active = yield* SynchronizedRef.make(Option.none<Active>());
@@ -147,6 +149,7 @@ export const layer = Layer.effect(
               yield* inherit(event.previousSessionFile, artifactRoot);
 
             yield* piTools.open(context);
+            yield* mcp.open(context);
             const notebook = yield* notebooks.open(artifactRoot);
             return new Active({ notebook, scope });
           }),

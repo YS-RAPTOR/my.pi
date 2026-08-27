@@ -32,7 +32,7 @@ export class OperationFailed extends Data.TaggedError("ShellTmuxOperationFailed"
 
 export type Interface = Readonly<{
   open: (
-    resourceId: string,
+    id: string,
     cwd: string,
     command: string,
     env?: Readonly<Record<string, string | null>>,
@@ -179,9 +179,9 @@ export const layer = Layer.effect(
     });
 
     const open: Interface["open"] = Effect.fn("Shell.Tmux.open")(
-      function* (resourceId, cwd, command, env) {
+      function* (id, cwd, command, env) {
         const current = yield* ensure();
-        const sessionId = `shell-${resourceId}`;
+        const sessionId = `shell-${id}`;
         const arguments_: Array<string> = [
           "new-session",
           "-d",

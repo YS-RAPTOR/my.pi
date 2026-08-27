@@ -17,24 +17,24 @@ import {
 import type { Target } from "./tmux.ts";
 
 export class Metadata extends Data.Class<{
-  readonly resourceId: string;
+  readonly id: string;
   readonly command: string;
   readonly cwd: string;
   readonly startedAt: number;
 }> {}
 
-export class Inspection extends Data.Class<{
-  readonly resourceId: string;
+export class Info extends Data.Class<{
+  readonly id: string;
   readonly command: string;
   readonly cwd: string;
   readonly startedAt: number;
   readonly isRunning: boolean;
-  readonly exitCode?: number | null;
-  readonly signal?: string | null;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
 }> {}
 
 export class ResourceNotFound extends Data.TaggedError("ResourceNotFound")<{
-  readonly resourceId: string;
+  readonly id: string;
 }> {}
 
 export class OperationFailed extends Data.TaggedError("ShellStoreOperationFailed")<{
@@ -43,7 +43,7 @@ export class OperationFailed extends Data.TaggedError("ShellStoreOperationFailed
 }> {}
 
 export class CompletionArtifact extends Data.Class<{
-  readonly inspection: Inspection;
+  readonly info: Info;
   readonly visible: string;
   readonly history: string;
 }> {}
@@ -66,11 +66,11 @@ export type Completed = Extract<Resource, { readonly _tag: "completed" }>;
 
 export type Interface = Readonly<{
   register: (metadata: Metadata, target: Target) => Effect.Effect<Running>;
-  get: (resourceId: string) => Effect.Effect<Resource, ResourceNotFound>;
+  get: (id: string) => Effect.Effect<Resource, ResourceNotFound>;
   entries: Effect.Effect<Chunk.Chunk<Resource>>;
   complete: (
     resource: Running,
-    inspection: Inspection,
+    info: Info,
     visible: string,
     history: string,
   ) => Effect.Effect<Completed, OperationFailed>;
@@ -85,14 +85,14 @@ const messageFrom = (cause: unknown): string =>
   cause instanceof globalThis.Error ? cause.message : String(cause);
 
 const ArtifactPayload = Schema.Struct({
-  inspection: Schema.Struct({
-    resourceId: Schema.String,
+  info: Schema.Struct({
+    id: Schema.String,
     command: Schema.String,
     cwd: Schema.String,
     startedAt: Schema.Finite,
     isRunning: Schema.Boolean,
-    exitCode: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-    signal: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    exitCode: Schema.NullOr(Schema.Finite),
+    signal: Schema.NullOr(Schema.String),
   }),
   visible: Schema.String,
   history: Schema.String,
@@ -134,15 +134,15 @@ export const layer = Layer.effect(
     const register: Interface["register"] = Effect.fn("Shell.Store.register")(
       function* (metadata, target) {
         const resource = Resource.running({ metadata, target });
-        yield* Ref.update(resources, HashMap.set<string, Resource>(metadata.resourceId, resource));
+        yield* Ref.update(resources, HashMap.set<string, Resource>(metadata.id, resource));
         return resource;
       },
     );
 
-    const get: Interface["get"] = Effect.fn("Shell.Store.get")(function* (resourceId) {
-      const resource = HashMap.get(yield* Ref.get(resources), resourceId);
+    const get: Interface["get"] = Effect.fn("Shell.Store.get")(function* (id) {
+      const resource = HashMap.get(yield* Ref.get(resources), id);
       if (Option.isSome(resource)) return resource.value;
-      return yield* new ResourceNotFound({ resourceId });
+      return yield* new ResourceNotFound({ id });
     });
 
     const entries: Interface["entries"] = pipe(
@@ -159,7 +159,7 @@ export const layer = Layer.effect(
             try: () => {
               const decoded = decodeArtifact(source);
               return new CompletionArtifact({
-                inspection: new Inspection(decoded.inspection),
+                info: new Info(decoded.info),
                 visible: decoded.visible,
                 history: decoded.history,
               });
@@ -183,16 +183,16 @@ export const layer = Layer.effect(
     });
 
     const complete: Interface["complete"] = Effect.fn("Shell.Store.complete")(
-      function* (resource, inspection, visible, history) {
-        const current = HashMap.get(yield* Ref.get(resources), resource.metadata.resourceId);
+      function* (resource, info, visible, history) {
+        const current = HashMap.get(yield* Ref.get(resources), resource.metadata.id);
         if (Option.isSome(current) && Resource.$is("completed")(current.value)) {
           return current.value;
         }
 
         const root = yield* directory();
-        const artifactPath = paths.join(root, `${resource.metadata.resourceId}.json`);
+        const artifactPath = paths.join(root, `${resource.metadata.id}.json`);
         const temporaryPath = `${artifactPath}.${globalThis.crypto.randomUUID()}.tmp`;
-        const value = new CompletionArtifact({ inspection, visible, history });
+        const value = new CompletionArtifact({ info, visible, history });
         yield* pipe(
           files.writeFileString(temporaryPath, JSON.stringify(value), {
             flag: "wx",
@@ -214,7 +214,7 @@ export const layer = Layer.effect(
         });
         yield* Ref.update(
           resources,
-          HashMap.set<string, Resource>(resource.metadata.resourceId, completed),
+          HashMap.set<string, Resource>(resource.metadata.id, completed),
         );
         return completed;
       },

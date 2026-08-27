@@ -8,8 +8,6 @@ import { BetterSkills } from "#s/features/better-skills";
 import { Commands } from "#s/features/commands";
 import { Footer } from "#s/features/footer";
 import { Rewriters } from "#s/features/rewriters";
-import { Search } from "#s/features/search";
-import { Shell } from "#s/features/shell";
 
 const platform = NodeServices.layer;
 
@@ -66,25 +64,8 @@ export const layer = (pi: ExtensionAPI) => {
       : Layer.empty,
   );
 
-  const search = configured(({ search }) => {
-    if (!search.enabled) return Layer.empty;
-    const service = pipe(Search.SearchService.layer, Layer.provide(Search.Fff.layer));
-    return Layer.mergeAll(
-      service,
-      pipe(Search.Autocomplete.layer, Layer.provide(service)),
-      pipe(Search.Commands.layer, Layer.provide(service)),
-    );
-  });
-
-  const shell = configured(({ shell }) => {
-    if (!shell.enabled) return Layer.empty;
-    const shellDependencies = Layer.merge(Shell.Store.layer, Shell.Tmux.layer);
-    const service = pipe(Shell.serviceLayer, Layer.provide(shellDependencies));
-    return Layer.merge(shellDependencies, service);
-  });
-
   const features = pipe(
-    Layer.mergeAll(activity, betterSkills, commands, footer, rewriters, search, shell),
+    Layer.mergeAll(activity, betterSkills, commands, footer, rewriters),
     Layer.provide(dependencies),
   );
   return Layer.merge(dependencies, features);

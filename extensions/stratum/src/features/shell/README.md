@@ -17,4 +17,4 @@ Shell is Stratum's internal PTY resource service. Every setting has a default:
 }
 ```
 
-Disabling Shell omits its Effect service. The terminal settings configure every tmux-backed PTY, while `max-read-lines` limits paginated history reads. Shell does not register Pi tools.
+Stratum exports the Shell layers but does not initialize them. Orogeny owns their single runtime instance and omits it when Shell is disabled. The terminal settings configure every tmux-backed PTY, while `max-read-lines` limits paginated history reads. Shell does not register Pi tools.

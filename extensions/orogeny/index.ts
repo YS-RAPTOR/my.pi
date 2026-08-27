@@ -3,23 +3,26 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NodeHttpServer, NodeServices } from "@effect/platform-node";
 import { Effect, Layer, ManagedRuntime, pipe } from "effect";
 import { Pi } from "@ys-raptor/pi-effect";
+import { Config as StratumConfig, Search, Shell as StratumShell } from "@ys-raptor/stratum.pi";
 import { Bridge } from "#o/bridge";
 import { Config } from "#o/config";
 import { Jupyter } from "#o/jupyter";
+import { Mcp } from "#o/mcp";
 import { Notebook } from "#o/notebook";
 import { CellOutput } from "#o/output";
 import { PiTools } from "#o/pi";
 import { Prelude } from "#o/prelude";
 import { Session } from "#o/session";
+import { Shell } from "#o/shell";
 import { Syntax } from "#o/syntax";
 import { Tools } from "#o/tools";
 
-const platform = NodeServices.layer;
-
 export const layer = (pi: ExtensionAPI) => {
-  const config = pipe(Config.layer, Layer.provide(platform));
-  const syntax = pipe(Syntax.layer, Layer.provide(config));
-  const prelude = Prelude.layer;
+  const platform = NodeServices.layer;
+  const configuration = pipe(
+    Layer.merge(Config.layer, StratumConfig.layer),
+    Layer.provide(platform),
+  );
   const bridge = pipe(
     Bridge.layer,
     Layer.provide(
@@ -29,36 +32,66 @@ export const layer = (pi: ExtensionAPI) => {
       }),
     ),
   );
-  const jupyter = pipe(Jupyter.layer, Layer.provide(platform));
-  const output = pipe(CellOutput.layer, Layer.provide(platform));
-  const syntaxPrelude = pipe(
-    Syntax.Prelude.layer,
-    Layer.provide(Layer.merge(syntax, prelude)),
-  );
-  const piTools = pipe(PiTools.layer, Layer.provide(bridge));
-  const piPrelude = pipe(PiTools.Prelude.layer, Layer.provide(prelude));
-  const runtime = Layer.mergeAll(
+  const foundation = Layer.mergeAll(
     platform,
-    config,
-    syntax,
-    prelude,
+    configuration,
+    Prelude.layer,
     bridge,
-    jupyter,
-    output,
-    syntaxPrelude,
-    piTools,
-    piPrelude,
+    Mcp.Capture.layer(pi),
   );
+
+  const capabilities = pipe(
+    Layer.mergeAll(Syntax.layer, Jupyter.layer, CellOutput.layer, Search.Fff.layer),
+    Layer.provide(foundation),
+  );
+  const search = pipe(
+    Search.SearchService.layer,
+    Layer.provide(Layer.merge(foundation, capabilities)),
+  );
+  const notebookApis = pipe(
+    Layer.mergeAll(
+      PiTools.layer,
+      PiTools.Prelude.layer,
+      Mcp.layer,
+      Mcp.Prelude.layer,
+      Syntax.Prelude.layer,
+    ),
+    Layer.provide(Layer.mergeAll(foundation, capabilities, search)),
+  );
+
+  const shellResources = pipe(
+    Layer.merge(StratumShell.Store.layer, StratumShell.Tmux.layer),
+    Layer.provide(foundation),
+  );
+  const shellService = pipe(
+    StratumShell.serviceLayer,
+    Layer.provide(Layer.merge(foundation, shellResources)),
+  );
+  const shellApis = pipe(
+    Layer.merge(Shell.layer, Shell.Prelude.layer),
+    Layer.provide(Layer.mergeAll(foundation, shellResources, shellService)),
+  );
+  const enabledShell = Layer.mergeAll(shellResources, shellService, shellApis);
+  const shell = pipe(
+    Layer.unwrap(
+      pipe(
+        StratumConfig.Service,
+        Effect.map((config) => (config.shell.enabled ? enabledShell : Layer.empty)),
+      ),
+    ),
+    Layer.provide(foundation),
+  );
+
+  const runtime = Layer.mergeAll(foundation, capabilities, search, notebookApis, shell);
+
   const notebook = pipe(Notebook.layer, Layer.provide(runtime));
-  const dependencies = Layer.mergeAll(
-    runtime,
-    notebook,
-    Pi.Host.layer(pi),
-    Pi.Contributions.layer,
-    Pi.Hooks.layer,
+  const host = Layer.mergeAll(Pi.Host.layer(pi), Pi.Contributions.layer, Pi.Hooks.layer);
+  const dependencies = Layer.mergeAll(runtime, notebook, host);
+  const features = pipe(
+    Layer.mergeAll(Session.layer, Search.Autocomplete.layer, Search.Commands.layer),
+    Layer.provide(dependencies),
   );
-  const session = pipe(Session.layer, Layer.provide(dependencies));
-  const services = Layer.merge(dependencies, session);
+  const services = Layer.merge(dependencies, features);
   const tools = pipe(
     Layer.mergeAll(
       Tools.Create.layer,
@@ -69,6 +102,7 @@ export const layer = (pi: ExtensionAPI) => {
     ),
     Layer.provide(services),
   );
+
   return Layer.merge(services, tools);
 };
 

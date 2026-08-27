@@ -59,7 +59,8 @@ export const schema = Schema.Struct({
     }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   search: Schema.Struct({
-    enabled,
+    projectAutocomplete: enabled,
+    homeAutocomplete: enabled,
     "frecency-database-path": string("~/.local/state/fff/frecency"),
     "history-database-path": string("~/.local/state/fff/history"),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),

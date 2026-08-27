@@ -11,6 +11,6 @@ export {
   type ShellError,
   layer as serviceLayer,
 } from "./service.ts";
-export { Inspection, ResourceNotFound, Store } from "./store.ts";
+export { Info, ResourceNotFound, Store } from "./store.ts";
 export { Tmux } from "./tmux.ts";
 export * as Shell from "./index.ts";

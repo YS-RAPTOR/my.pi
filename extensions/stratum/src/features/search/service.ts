@@ -22,6 +22,7 @@ import {
   Path,
   Predicate,
   Ref,
+  Schema,
   String as Str,
   SynchronizedRef,
   pipe,
@@ -41,13 +42,17 @@ const WILDCARD_ONLY =
 const FILE_EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,9}$/;
 const parseRegex = Option.liftThrowable((pattern: string) => new RegExp(pattern));
 
-export class FindInput extends Data.Class<{
-  readonly pattern: string;
-  readonly path?: string;
-  readonly exclude?: string | ReadonlyArray<string>;
-  readonly limit?: number;
-  readonly cursor?: string;
-}> {}
+const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const nonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+export const FindInput = Schema.Struct({
+  pattern: Schema.String,
+  path: Schema.optionalKey(Schema.String),
+  exclude: Schema.optionalKey(Schema.Array(Schema.String)),
+  limit: Schema.optionalKey(positiveInteger),
+  cursor: Schema.optionalKey(Schema.String),
+});
+export type FindInput = typeof FindInput.Type;
 
 export class FindOutput extends Data.Class<{
   readonly result: SearchResult;
@@ -57,15 +62,19 @@ export class FindOutput extends Data.Class<{
   readonly nextCursor?: string;
 }> {}
 
-export class GrepInput extends Data.Class<{
-  readonly pattern: string;
-  readonly path?: string;
-  readonly exclude?: string | ReadonlyArray<string>;
-  readonly caseSensitive?: boolean;
-  readonly context?: number;
-  readonly limit?: number;
-  readonly cursor?: string;
-}> {}
+export const GrepInput = Schema.Struct({
+  pattern: Schema.String,
+  path: Schema.optionalKey(Schema.String),
+  exclude: Schema.optionalKey(Schema.Array(Schema.String)),
+  caseSensitive: Schema.optionalKey(Schema.Boolean),
+  context: Schema.optionalKey(nonNegativeInteger),
+  limit: Schema.optionalKey(positiveInteger),
+  cursor: Schema.optionalKey(Schema.String),
+});
+export type GrepInput = typeof GrepInput.Type;
+
+const decodeFind = Schema.decodeUnknownEffect(FindInput, { onExcessProperty: "error" });
+const decodeGrep = Schema.decodeUnknownEffect(GrepInput, { onExcessProperty: "error" });
 
 export class GrepOutput extends Data.Class<{
   readonly result: GrepResult;
@@ -113,8 +122,8 @@ type CursorState = Readonly<{ next: number; entries: ReadonlyArray<Cursor> }>;
 
 export type Interface = Readonly<{
   initialize: (cwd: string) => Effect.Effect<void, SearchError>;
-  find: (input: FindInput) => Effect.Effect<FindOutput, SearchError>;
-  grep: (input: GrepInput) => Effect.Effect<GrepOutput, SearchError>;
+  find: (input: Schema.Json) => Effect.Effect<FindOutput, SearchError>;
+  grep: (input: Schema.Json) => Effect.Effect<GrepOutput, SearchError>;
   completeWorkspace: (query: string) => Effect.Effect<MixedSearchResult, SearchError>;
   completeHome: (
     query: string,
@@ -391,7 +400,11 @@ export const layer = Layer.effect(
       return { entry, query: cursor.query, auxiliaryRoot: cursor.auxiliaryRoot };
     });
 
-    const find: Interface["find"] = Effect.fn("Features.Search.find")(function* (input) {
+    const find: Interface["find"] = Effect.fn("Features.Search.find")(function* (raw) {
+      const input = yield* pipe(
+        decodeFind(raw),
+        Effect.mapError((error) => failure("find", `Invalid arguments: ${error.message}`)),
+      );
       const resumed = input.cursor === undefined ? undefined : yield* getFindCursor(input.cursor);
       const selected =
         resumed === undefined
@@ -424,7 +437,11 @@ export const layer = Layer.effect(
         : new FindOutput({ ...output, nextCursor });
     });
 
-    const grep: Interface["grep"] = Effect.fn("Features.Search.grep")(function* (input) {
+    const grep: Interface["grep"] = Effect.fn("Features.Search.grep")(function* (raw) {
+      const input = yield* pipe(
+        decodeGrep(raw),
+        Effect.mapError((error) => failure("grep", `Invalid arguments: ${error.message}`)),
+      );
       const selected = yield* routed(input.path, input.pattern, input.exclude);
       const hasRegexSyntax = REGEX_SYNTAX.test(input.pattern);
       const mode: GrepMode =
