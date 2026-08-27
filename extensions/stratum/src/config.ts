@@ -1,7 +1,9 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Config as EffectConfig, Context, Effect, FileSystem, Layer, Path, Schema } from "effect";
 
 const enabled = Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true)));
+const string = (fallback: string) =>
+  Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(fallback)));
 const positiveInteger = (fallback: number) =>
   Schema.Int.check(Schema.isGreaterThan(0)).pipe(
     Schema.withDecodingDefault(Effect.succeed(fallback)),
@@ -56,6 +58,11 @@ export const schema = Schema.Struct({
       "history-lines": positiveInteger(100_000),
     }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  search: Schema.Struct({
+    enabled,
+    "frecency-database-path": string("~/.local/state/fff/frecency"),
+    "history-database-path": string("~/.local/state/fff/history"),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   footer: Schema.Struct({
     enabled,
     cwd: enabled,
@@ -89,10 +96,21 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const files = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
+    const home = yield* EffectConfig.string("HOME");
     const file = paths.join(getAgentDir(), "stratum.json");
     const exists = yield* files.exists(file);
     const source = exists ? yield* files.readFileString(file) : "{}";
-    return Service.of(yield* decode(source));
+    const value = yield* decode(source);
+    const resolveHome = (path: string) =>
+      path === "~" ? home : path.startsWith("~/") ? paths.join(home, path.slice(2)) : path;
+    return Service.of({
+      ...value,
+      search: {
+        ...value.search,
+        "frecency-database-path": resolveHome(value.search["frecency-database-path"]),
+        "history-database-path": resolveHome(value.search["history-database-path"]),
+      },
+    });
   }),
 );
 

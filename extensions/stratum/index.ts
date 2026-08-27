@@ -29,13 +29,7 @@ export const layer = (pi: ExtensionAPI) => {
     pipe(Commands.layer, Layer.provide(dependencies)),
     activity,
     pipe(Footer.layer, Layer.provide(dependencies)),
-    pipe(
-      Layer.mergeAll(
-        Rewriters.Clarify.layer,
-        Rewriters.layer,
-      ),
-      Layer.provide(dependencies),
-    ),
+    pipe(Layer.mergeAll(Rewriters.Clarify.layer, Rewriters.layer), Layer.provide(dependencies)),
     shell,
   );
 };
@@ -54,6 +48,7 @@ const Stratum = async (pi: ExtensionAPI): Promise<void> => {
 export { Config } from "#s/config";
 export { Activity } from "#s/features/activity";
 export { Commands } from "#s/features/commands";
+export { Search } from "#s/features/search";
 export { Footer } from "#s/features/footer";
 export { Rewriters } from "#s/features/rewriters";
 export { Shell } from "#s/features/shell";
