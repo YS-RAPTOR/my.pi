@@ -13,12 +13,17 @@ const platform = NodeServices.layer;
 export const layer = (pi: ExtensionAPI) => {
   const config = pipe(Config.layer, Layer.provide(platform));
   const syntax = pipe(Syntax.layer, Layer.provide(config));
-  const prelude = pipe(Prelude.layer, Layer.provide(syntax));
+  const prelude = Prelude.layer;
+  const syntaxPrelude = pipe(
+    Syntax.Prelude.layer,
+    Layer.provide(Layer.merge(syntax, prelude)),
+  );
   const dependencies = Layer.mergeAll(
     platform,
     config,
     syntax,
     prelude,
+    syntaxPrelude,
     Pi.Host.layer(pi),
     Pi.Contributions.layer,
     Pi.Hooks.layer,

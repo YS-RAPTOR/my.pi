@@ -4,9 +4,7 @@
   "type": "module",
   "imports": {
     "#o/config": "./src/config.ts",
-    "#o/prelude": "./src/prelude.ts",
     "#o/session": "./src/session.ts",
-    "#o/syntax": "./src/syntax.ts",
     "#o/*": "./src/*/index.ts"
   },
   "scripts": {

@@ -1,20 +1,14 @@
-import { Array as Arr, Context, Effect, HashMap, Layer, Order, pipe } from "effect";
-import { Syntax } from "#o/syntax";
-import { CODE_MIME } from "./output/mime.ts";
-
-export type Interface = Readonly<{
-  readonly get: Effect.Effect<string>;
-  readonly languages: HashMap.HashMap<string, string>;
-}>;
-
-export class Service extends Context.Service<Service, Interface>()("orogeny/Prelude") {}
+import { Array as Arr, Effect, HashMap, Layer, Order, pipe } from "effect";
+import { Prelude } from "#o/prelude";
+import { CODE_MIME } from "../output/mime.ts";
+import { Service } from "./index.ts";
 
 const tagOrder = pipe(
   Order.String,
   Order.mapInput(([tag]: readonly [string, string]) => tag),
 );
 
-const preludeSource = (languages: HashMap.HashMap<string, string>) => {
+const source = (languages: HashMap.HashMap<string, string>) => {
   const entries = pipe(HashMap.entries(languages), Arr.fromIterable, Arr.sort(tagOrder));
   const bindings = pipe(
     entries,
@@ -93,13 +87,10 @@ ${values}
 })();`;
 };
 
-export const layer = Layer.effect(
-  Service,
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const languages = (yield* Syntax.Service).tags;
-    const get: Interface["get"] = Effect.succeed(preludeSource(languages));
-    return Service.of({ get, languages });
+    const syntax = yield* Service;
+    const preludes = yield* Prelude.Service;
+    yield* preludes.register("syntax", source(syntax.tags));
   }),
 );
-
-export * as Prelude from "./prelude.ts";

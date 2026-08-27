@@ -19,7 +19,7 @@ import {
   pipe,
 } from "effect";
 import { Config } from "#o/config";
-import { CodeTheme } from "./ui/code-theme.ts";
+import { CodeTheme } from "../ui/code-theme.ts";
 
 export class OperationFailed extends Data.TaggedError("OrogenySyntax")<{
   readonly operation: string;
@@ -341,4 +341,5 @@ export const layer = Layer.effect(
   }),
 );
 
-export * as Syntax from "./syntax.ts";
+export * as Prelude from "./prelude.ts";
+export * as Syntax from "./index.ts";
