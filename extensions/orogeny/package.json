@@ -12,7 +12,7 @@
     "lint": "oxlint --deny-warnings ."
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.4",
     "@effect/platform-node": "4.0.0-beta.102",
     "@ys-raptor/pi-effect": "0.0.0",
     "@ys-raptor/splice": "github:YS-RAPTOR/splice#9897c8a883e535eb0d0bf4bb077b3ec5d77c1d14",
