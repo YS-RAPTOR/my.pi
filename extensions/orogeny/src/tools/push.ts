@@ -124,12 +124,10 @@ export const layer = Layer.effectDiscard(
       name: "push",
       label: "Push Cell",
       description:
-        "Admit one TypeScript cell to an existing idle notebook. Omit notebookId to use the current notebook. Admission does not mean execution completed; use wait to observe status and output.",
-      promptSnippet: "Admit TypeScript code to an existing notebook",
+        "Admit one TypeScript cell to an idle notebook and return its cell ID before execution completes. Omit notebookId to use the current notebook.",
+      promptSnippet: "Submit TypeScript to an idle notebook and return its cell ID",
       promptGuidelines: [
-        "Every cell is TypeScript.",
-        "Use push only with an existing idle notebook; use create first when no current live notebook exists.",
-        "After push succeeds, use wait with the returned cell ID to observe completion and output.",
+        "`push` submits a cell and returns its ID before execution finishes. Supplying `notebookId` also selects that notebook for later pushes.",
       ],
       parameters,
       executionMode: "parallel",

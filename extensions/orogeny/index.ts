@@ -16,6 +16,7 @@ import { Session } from "#o/session";
 import { Shell } from "#o/shell";
 import { Syntax } from "#o/syntax";
 import { Tools } from "#o/tools";
+import * as SystemPrompt from "./src/system_prompt.ts";
 
 export const layer = (pi: ExtensionAPI) => {
   const platform = NodeServices.layer;
@@ -88,7 +89,12 @@ export const layer = (pi: ExtensionAPI) => {
   const host = Layer.mergeAll(Pi.Host.layer(pi), Pi.Contributions.layer, Pi.Hooks.layer);
   const dependencies = Layer.mergeAll(runtime, notebook, host);
   const features = pipe(
-    Layer.mergeAll(Session.layer, Search.Autocomplete.layer, Search.Commands.layer),
+    Layer.mergeAll(
+      Session.layer,
+      Search.Autocomplete.layer,
+      Search.Commands.layer,
+      SystemPrompt.layer,
+    ),
     Layer.provide(dependencies),
   );
   const services = Layer.merge(dependencies, features);

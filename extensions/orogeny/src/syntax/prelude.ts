@@ -15,11 +15,6 @@ const source = (languages: HashMap.HashMap<string, string>) => {
     Arr.map(([tag]) => `  ${tag},`),
     Arr.join("\n"),
   );
-  const supported = pipe(
-    entries,
-    Arr.map(([tag]) => tag.slice(1)),
-    JSON.stringify,
-  );
   const values = pipe(
     entries,
     Arr.map(([, language]) => `    makeLanguageTag(${JSON.stringify(language)}),`),
@@ -27,8 +22,6 @@ const source = (languages: HashMap.HashMap<string, string>) => {
   );
 
   return Prelude.dedent`
-    const $languages = Object.freeze(${supported}) as readonly string[];
-
     const [
     ${bindings}
     ] = (() => {
@@ -138,22 +131,6 @@ const docs = (languages: HashMap.HashMap<string, string>): ReadonlyArray<Prelude
       `,
     ],
     keywords: ["image", "blob", "display", "render", "jupyter"],
-  },
-  {
-    name: "$languages",
-    kind: "value",
-    summary: "Supported embedded-language extension tags.",
-    signature: "const $languages: readonly string[]",
-    description: Prelude.singleLine`
-      An immutable array of supported language extensions without the leading \`$\`. Each
-      extension has a matching tagged-template global.
-    `,
-    errors: [],
-    examples: [
-      '$languages.includes("py")',
-      '$languages.filter((extension) => extension.includes("js"))',
-    ],
-    keywords: ["languages", "syntax", "extensions", "tags"],
   },
   ...pipe(
     HashMap.entries(languages),

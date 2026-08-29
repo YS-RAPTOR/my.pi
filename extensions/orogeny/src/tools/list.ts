@@ -151,11 +151,10 @@ export const layer = Layer.effectDiscard(
       name: "list",
       label: "List Notebooks",
       description:
-        "List notebooks and their artifact directories, optionally filtering by exact status and a case-insensitive name substring.",
-      promptSnippet: "List notebooks, their current status, and artifact directories",
+        "List notebooks by optional exact status and case-insensitive name substring.",
+      promptSnippet: "List notebook IDs, state, active cells, and artifact directories",
       promptGuidelines: [
-        "Use list to find notebook IDs, active cell IDs, and artifact directories.",
-        "The name filter is a case-insensitive contains search.",
+        "`list` finds live notebook and active-cell IDs; it also shows closed notebooks for artifact access, but they cannot run more cells.",
       ],
       parameters,
       executionMode: "parallel",

@@ -73,9 +73,12 @@ export const layer = Layer.effectDiscard(
       name: "create",
       label: "Create Notebook",
       description:
-        "Create a persistent notebook. The new notebook becomes current and is ready for push when this call succeeds.",
-      promptSnippet: "Create a ready notebook and make it current",
-      promptGuidelines: ["Use create before push when no current live notebook exists."],
+        "Create a persistent notebook, make it current, and return its ID and artifact directory.",
+      promptSnippet: "Start a persistent TypeScript notebook and make it current",
+      promptGuidelines: [
+        "A notebook is a live TypeScript environment: top-level state survives across its cells. Closing it ends that environment but keeps its artifacts and recorded output.",
+        "`create` starts and selects a notebook.",
+      ],
       parameters,
       executionMode: "parallel",
       renderShell: "self",

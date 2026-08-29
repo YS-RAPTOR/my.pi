@@ -215,13 +215,10 @@ export const layer = Layer.effectDiscard(
       name: "wait",
       label: "Wait or Sleep",
       description:
-        "Wait for a notebook cell and return its status, bounded output captured since the supplied cursor, next cursor, and whether more output remains. Output may include text, highlighted code, and images. Pass null for cellId to sleep instead. timeoutMillis defaults to 10000; set it to 0 for an immediate poll or no-op sleep.",
-      promptSnippet: "Wait for a notebook cell, or sleep when cellId is null",
+        "Wait up to timeoutMillis for cell state and output since cursor, or sleep when cellId is null. Returns status, bounded output, the next cursor, and whether more output remains.",
+      promptSnippet: "Observe cell status and new output, or sleep",
       promptGuidelines: [
-        "After push succeeds, use wait with its returned cell ID to receive the cell's status and captured output.",
-        "Pass wait's next cursor back as cursor on the next wait call so output is not repeated.",
-        "Call wait again while the cell is running or while more output remains. A wait timeout does not stop the cell; use stop explicitly when needed.",
-        "Use a null cell ID to sleep for timeoutMillis without observing a notebook cell.",
+        "`wait` returns new output and the cell's current status. Pass its returned cursor to the next wait while more output remains, even after the cell finishes. A timeout leaves it running.",
       ],
       parameters,
       executionMode: "parallel",

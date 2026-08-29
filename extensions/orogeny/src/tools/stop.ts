@@ -92,11 +92,10 @@ export const layer = Layer.effectDiscard(
     yield* contributions.tool({
       name: "stop",
       label: "Stop Cell or Notebook",
-      description: "Stop a running cell or close a notebook. Pass the full cell_... or nb_... ID.",
-      promptSnippet: "Stop a cell or close a notebook by ID",
+      description: "Interrupt a running cell or close a notebook by its full ID.",
+      promptSnippet: "Interrupt a cell or close a notebook",
       promptGuidelines: [
-        "Use stop with a cell ID to stop that cell.",
-        "Use stop with a notebook ID to close that notebook.",
+        "`stop` interrupts a running cell and closes its notebook if interruption does not finish promptly. Closing a busy notebook also interrupts its active cell.",
       ],
       parameters,
       executionMode: "parallel",
