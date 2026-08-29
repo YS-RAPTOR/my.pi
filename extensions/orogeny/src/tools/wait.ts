@@ -88,7 +88,7 @@ type Completion = Extract<Notebook.WaitEvent, { readonly _tag: "complete" }>;
 
 type RendererState = { view?: WaitView };
 
-class WaitFailed extends Data.TaggedError("WaitFailed")<{
+export class WaitFailed extends Data.TaggedError("WaitFailed")<{
   readonly message: string;
 }> {}
 
@@ -154,6 +154,142 @@ const modelContent = (details: Details): AgentToolResult<Details>["content"] => 
   }
   return content;
 };
+
+export const observe = Effect.fn("Orogeny.Tools.Wait.observe")(function* (
+  config: Config.Value,
+  sessions: Session.Interface,
+  input: Input,
+  onUpdate: AgentToolUpdateCallback<Details> | undefined,
+) {
+  const timeoutMillis = Math.min(
+    input.timeoutMillis ?? DEFAULT_TIMEOUT_MILLIS,
+    config["max-wait-ms"],
+  );
+  const cellId =
+    input.cellId === null
+      ? null
+      : yield* pipe(
+          Schema.decodeUnknownEffect(Notebook.CellId)(input.cellId),
+          Effect.mapError(() => new WaitFailed({ message: "The cell ID is invalid." })),
+        );
+  const startedAt = yield* Clock.currentTimeMillis;
+  const deadline = startedAt + timeoutMillis;
+  const output = yield* Ref.make(Chunk.empty<CellOutput.Content>());
+  const completion = yield* Ref.make<Option.Option<Completion>>(Option.none());
+
+  const remaining = pipe(
+    Clock.currentTimeMillis,
+    Effect.map((now) => Math.max(0, Math.ceil((deadline - now) / 1_000))),
+  );
+  const update = Effect.fnUntraced(function* (remainingSeconds: number) {
+    if (onUpdate === undefined) return;
+    const details: Details =
+      cellId === null
+        ? {
+            cellId: null,
+            status: "sleeping",
+            remainingSeconds,
+            sleptMillis: timeoutMillis,
+            output: [],
+          }
+        : {
+            cellId,
+            status: "waiting",
+            remainingSeconds,
+            output: serialize(yield* Ref.get(output)),
+          };
+    yield* Effect.sync(() => onUpdate({ content: modelContent(details), details }));
+  });
+
+  yield* Effect.scoped(
+    Effect.gen(function* () {
+      const initial = yield* remaining;
+      yield* update(initial);
+      if (onUpdate !== undefined)
+        yield* pipe(
+          Effect.gen(function* () {
+            let previous = initial;
+            while (previous > 0) {
+              yield* Effect.sleep(Duration.millis(COUNTDOWN_UPDATE_MILLIS));
+              const current = yield* remaining;
+              if (current === previous) continue;
+              previous = current;
+              yield* update(current);
+            }
+          }),
+          Effect.forkScoped,
+        );
+
+      if (cellId === null) {
+        yield* Effect.sleep(Duration.millis(timeoutMillis));
+        return;
+      }
+
+      const notebooks = yield* pipe(
+        sessions.notebook,
+        Effect.mapError(() => new WaitFailed({ message: "The notebook session is unavailable." })),
+      );
+      const cursor =
+        input.cursor === undefined
+          ? Option.none<CellOutput.Cursor>()
+          : yield* pipe(
+              Schema.decodeUnknownEffect(CellOutput.Cursor.FromString)(input.cursor),
+              Effect.map(Option.some),
+              Effect.mapError(() => new WaitFailed({ message: "The output cursor is invalid." })),
+            );
+      yield* pipe(
+        notebooks.wait(new Notebook.WaitInput({ cellId, cursor, timeoutMillis })),
+        Stream.runForEach((event) =>
+          pipe(
+            Match.value(event),
+            Match.when({ _tag: "complete" }, (value) => Ref.set(completion, Option.some(value))),
+            Match.when({ _tag: "content" }, ({ value }) =>
+              pipe(
+                Ref.update(output, Chunk.append(value)),
+                Effect.andThen(remaining),
+                Effect.flatMap(update),
+              ),
+            ),
+            Match.exhaustive,
+          ),
+        ),
+        Effect.mapError(
+          (error) =>
+            new WaitFailed({
+              message: pipe(
+                Match.value(error.operation),
+                Match.when("find cell", () => "Cell not found."),
+                Match.when("read cell output", () => error.message),
+                Match.orElse(() => "The cell could not be observed."),
+              ),
+            }),
+        ),
+      );
+    }),
+  );
+
+  if (cellId === null) {
+    const details: Details = {
+      cellId: null,
+      status: "succeeded",
+      sleptMillis: timeoutMillis,
+      output: [],
+    };
+    return { content: modelContent(details), details };
+  }
+
+  const completed = yield* Effect.fromOption(
+    () => new WaitFailed({ message: "The wait ended without a status." }),
+  )(yield* Ref.get(completion));
+  const details: Details = {
+    cellId,
+    status: completed.status,
+    nextCursor: completed.nextCursor.toString(),
+    hasMore: completed.hasMore,
+    output: serialize(yield* Ref.get(output)),
+  };
+  return { content: modelContent(details), details };
+});
 
 class WaitView implements Component {
   private readonly body: OutputView;
@@ -230,136 +366,7 @@ export const layer = Layer.effectDiscard(
         onUpdate: AgentToolUpdateCallback<Details> | undefined,
         _context: ExtensionContext,
       ) {
-        const timeoutMillis = Math.min(
-          input.timeoutMillis ?? DEFAULT_TIMEOUT_MILLIS,
-          config["max-wait-ms"],
-        );
-        const cellId =
-          input.cellId === null
-            ? null
-            : yield* Schema.decodeUnknownEffect(Notebook.CellId)(input.cellId).pipe(
-                Effect.mapError(() => new WaitFailed({ message: "The cell ID is invalid." })),
-              );
-        const startedAt = yield* Clock.currentTimeMillis;
-        const deadline = startedAt + timeoutMillis;
-        const output = yield* Ref.make(Chunk.empty<CellOutput.Content>());
-        const completion = yield* Ref.make<Option.Option<Completion>>(Option.none());
-
-        const remaining = pipe(
-          Clock.currentTimeMillis,
-          Effect.map((now) => Math.max(0, Math.ceil((deadline - now) / 1_000))),
-        );
-        const update = Effect.fnUntraced(function* (remainingSeconds: number) {
-          if (onUpdate === undefined) return;
-          const details: Details =
-            cellId === null
-              ? {
-                  cellId: null,
-                  status: "sleeping",
-                  remainingSeconds,
-                  sleptMillis: timeoutMillis,
-                  output: [],
-                }
-              : {
-                  cellId,
-                  status: "waiting",
-                  remainingSeconds,
-                  output: serialize(yield* Ref.get(output)),
-                };
-          yield* Effect.sync(() => onUpdate({ content: modelContent(details), details }));
-        });
-
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const initial = yield* remaining;
-            yield* update(initial);
-            if (onUpdate !== undefined)
-              yield* pipe(
-                Effect.gen(function* () {
-                  let previous = initial;
-                  while (previous > 0) {
-                    yield* Effect.sleep(Duration.millis(COUNTDOWN_UPDATE_MILLIS));
-                    const current = yield* remaining;
-                    if (current === previous) continue;
-                    previous = current;
-                    yield* update(current);
-                  }
-                }),
-                Effect.forkScoped,
-              );
-
-            if (cellId === null) {
-              yield* Effect.sleep(Duration.millis(timeoutMillis));
-              return;
-            }
-
-            const notebooks = yield* sessions.notebook.pipe(
-              Effect.mapError(
-                () => new WaitFailed({ message: "The notebook session is unavailable." }),
-              ),
-            );
-            const cursor = yield* input.cursor === undefined
-              ? Effect.succeed(Option.none<CellOutput.Cursor>())
-              : Schema.decodeUnknownEffect(CellOutput.Cursor.FromString)(input.cursor).pipe(
-                  Effect.map(Option.some),
-                  Effect.mapError(
-                    () => new WaitFailed({ message: "The output cursor is invalid." }),
-                  ),
-                );
-            yield* pipe(
-              notebooks.wait(new Notebook.WaitInput({ cellId, cursor, timeoutMillis })),
-              Stream.runForEach((event) =>
-                pipe(
-                  Match.value(event),
-                  Match.when({ _tag: "complete" }, (value) =>
-                    Ref.set(completion, Option.some(value)),
-                  ),
-                  Match.when({ _tag: "content" }, ({ value }) =>
-                    pipe(
-                      Ref.update(output, Chunk.append(value)),
-                      Effect.andThen(remaining),
-                      Effect.flatMap(update),
-                    ),
-                  ),
-                  Match.exhaustive,
-                ),
-              ),
-              Effect.mapError(
-                (error) =>
-                  new WaitFailed({
-                    message: pipe(
-                      Match.value(error.operation),
-                      Match.when("find cell", () => "Cell not found."),
-                      Match.when("read cell output", () => error.message),
-                      Match.orElse(() => "The cell could not be observed."),
-                    ),
-                  }),
-              ),
-            );
-          }),
-        );
-
-        if (cellId === null) {
-          const details: Details = {
-            cellId: null,
-            status: "succeeded",
-            sleptMillis: timeoutMillis,
-            output: [],
-          };
-          return { content: modelContent(details), details };
-        }
-
-        const completed = yield* Effect.fromOption(
-          () => new WaitFailed({ message: "The wait ended without a status." }),
-        )(yield* Ref.get(completion));
-        const details: Details = {
-          cellId,
-          status: completed.status,
-          nextCursor: completed.nextCursor.toString(),
-          hasMore: completed.hasMore,
-          output: serialize(yield* Ref.get(output)),
-        };
-        return { content: modelContent(details), details };
+        return yield* observe(config, sessions, input, onUpdate);
       }),
       renderCall(input: Partial<Input> | undefined, theme, context) {
         if (!context.isPartial || context.executionStarted) return empty();

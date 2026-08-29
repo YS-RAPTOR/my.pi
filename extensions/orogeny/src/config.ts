@@ -23,6 +23,7 @@ const parserDirectory = join(
 
 export const schema = Schema.Struct({
   "max-live-notebooks": positiveInteger(5),
+  "push-wait-ms": positiveInteger(1_000),
   "max-wait-ms": positiveInteger(5 * 60 * 1_000),
   "interrupt-grace-ms": positiveInteger(5_000),
   "tree-sitter": Schema.Struct({
