@@ -45,9 +45,13 @@ export const layer = (pi: ExtensionAPI) => {
     return Layer.merge(runtime, features);
   });
 
-  const commands = configured(({ commands }) =>
-    commands.enabled && commands.stretch.enabled ? Commands.Stretch.layer : Layer.empty,
-  );
+  const commands = configured(({ commands: settings }) => {
+    if (!settings.enabled) return Layer.empty;
+    return Layer.mergeAll(
+      settings["home-autocomplete"].enabled ? Commands.HomeAutocomplete.layer : Layer.empty,
+      settings.stretch.enabled ? Commands.Stretch.layer : Layer.empty,
+    );
+  });
 
   const footer = configured(({ footer }) =>
     footer.enabled
@@ -88,7 +92,5 @@ export { BetterSkills } from "#s/features/better-skills";
 export { Commands } from "#s/features/commands";
 export { Footer } from "#s/features/footer";
 export { Rewriters } from "#s/features/rewriters";
-export { Search } from "#s/features/search";
-export { Shell } from "#s/features/shell";
 export { Pi } from "@ys-raptor/pi-effect";
 export default Stratum;

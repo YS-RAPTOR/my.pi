@@ -38,6 +38,11 @@ export const schema = Schema.Struct({
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   commands: Schema.Struct({
     enabled,
+    "home-autocomplete": Schema.Struct({
+      enabled,
+      "frecency-database-path": string("~/.local/state/fff/frecency"),
+      "history-database-path": string("~/.local/state/fff/history"),
+    }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     stretch: Schema.Struct({
       enabled,
       "step-tokens": positiveInteger(64_000),
@@ -57,12 +62,6 @@ export const schema = Schema.Struct({
       rows: positiveInteger(75),
       "history-lines": positiveInteger(100_000),
     }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  search: Schema.Struct({
-    projectAutocomplete: enabled,
-    homeAutocomplete: enabled,
-    "frecency-database-path": string("~/.local/state/fff/frecency"),
-    "history-database-path": string("~/.local/state/fff/history"),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   footer: Schema.Struct({
     enabled,
@@ -106,10 +105,17 @@ export const layer = Layer.effect(
       path === "~" ? home : path.startsWith("~/") ? paths.join(home, path.slice(2)) : path;
     return Service.of({
       ...value,
-      search: {
-        ...value.search,
-        "frecency-database-path": resolveHome(value.search["frecency-database-path"]),
-        "history-database-path": resolveHome(value.search["history-database-path"]),
+      commands: {
+        ...value.commands,
+        "home-autocomplete": {
+          ...value.commands["home-autocomplete"],
+          "frecency-database-path": resolveHome(
+            value.commands["home-autocomplete"]["frecency-database-path"],
+          ),
+          "history-database-path": resolveHome(
+            value.commands["home-autocomplete"]["history-database-path"],
+          ),
+        },
       },
     });
   }),
