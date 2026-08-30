@@ -1,11 +1,18 @@
 ---
 name: subagents
 description: Run and supervise a separate interactive Pi agent through a persistent PTY. Use when the user asks for a subagent or when an independent worker should handle a bounded task.
+available-if: |
+  command -v tmux >/dev/null 2>&1 &&
+  command -v pi >/dev/null 2>&1 &&
+  command -v bash >/dev/null 2>&1 &&
+  printf true
 ---
 
 # Subagents
 
 Treat the child as a supervised collaborator. Keep ownership of the parent task, give the child one bounded objective, and verify its result yourself.
+
+Read the [interactive shell skill](../automation/interactive-shell/SKILL.md) and its interaction, output, and lifecycle references before starting. Its private tmux resource is the transport and the source of truth for opening, input, observation, status, waiting, termination, and cleanup. This skill adds only Pi-specific supervision.
 
 ## 1. Frame the delegation
 
@@ -22,54 +29,56 @@ Tell the child to perform the task directly; nested delegation is out of scope. 
 
 **Complete when:** the child can perform the task without access to the parent conversation or an unstated decision.
 
-## 2. Open Pi in a PTY
+## 2. Open Pi
 
-Use `shell_open` with an explicit regular TUI, the target working directory, and PTY mode:
+Apply the interactive shell's open workflow with:
 
-```text
-shell_open({
-  cmd: "pi --tui-mode regular",
-  cwd: "<target working directory>",
-  pty: true,
-  yield_after: 1
-})
+```bash
+SOCKET="pi-shell-${PI_SESSION_ID}"
+RESOURCE="subagent-$(date +%s)-${RANDOM}"
+CWD="/absolute/target/working/directory"
+COMMAND='pi --tui-mode regular'
 ```
 
-`--tui-mode regular` overrides a fullscreen setting. Preserve the returned resource ID for every later operation.
+`--tui-mode regular` keeps captures readable. Use `--approve` only when the target project is already trusted for this run. Record the concrete `SOCKET`, `RESOURCE`, and `PANE`; re-declare them at the start of every later Bash call.
 
-Take a `shell_snapshot` before sending the task. Resolve any startup prompt only from facts already established by the parent; use `--approve` at launch only when the target project is already trusted for this run.
+Capture the pane and inspect fresh status before sending the task. Resolve any startup prompt only from facts already established by the parent.
 
-**Complete when:** the snapshot shows Pi ready for input and the PTY resource ID is known.
+**Complete when:** a pane capture shows Pi ready for input and the tmux resource values are recorded.
 
 ## 3. Submit and converse
 
-Send the delegation with `shell_write`. Pi's interactive editor requires a carriage return to activate Enter:
+Paste a multiline delegation through a tmux buffer, then send Enter as a named key:
 
-```text
-shell_write({ resource_id: "<id>", text: "<delegation prompt>\r" })
+```bash
+printf '%s' "$DELEGATION" | tmux -L "$SOCKET" load-buffer -
+tmux -L "$SOCKET" paste-buffer -d -t "$PANE"
+tmux -L "$SOCKET" send-keys -t "$PANE" Enter
 ```
 
-The trailing `\r` is mandatory. `\n` is not a substitute and may leave the message unsubmitted. `shell_write` sends text verbatim and appends nothing automatically.
+For a one-line correction, question, or steering message:
 
-Use the same pattern for every correction, question, or steering message:
-
-```text
-shell_write({ resource_id: "<id>", text: "<follow-up>\r" })
+```bash
+tmux -L "$SOCKET" send-keys -l -t "$PANE" -- 'follow-up'
+tmux -L "$SOCKET" send-keys -t "$PANE" Enter
 ```
 
-When Pi is working, submitted text may queue as steering for the next turn. Write a precise follow-up rather than restarting the child.
+Literal input appends nothing; the separate `Enter` submits it. When Pi is working, submitted text may queue as steering for the next turn. Write a precise follow-up rather than restarting the child.
 
-**Complete when:** a snapshot shows the task in the child transcript or queued in its editor.
+Capture the pane after submission.
+
+**Complete when:** the pane shows the task in the child transcript or queued in its editor.
 
 ## 4. Supervise the run
 
-Alternate the observation tools deliberately:
+Use the interactive shell's bounded capture, status, and wait operations deliberately:
 
-- Use `shell_wait` with a bounded `yield_after` to give the child time to work and receive the latest visible terminal. A yielded wait means Pi is still running; continue supervision.
-- Use `shell_snapshot` to inspect immediately. Request a small trailing `lines` count for routine checks and a complete snapshot when context is missing.
-- Compare snapshot revisions and visible activity to distinguish progress from an unchanged screen.
+- Capture the visible pane for routine checks.
+- Capture a bounded history page when the needed context has scrolled away.
+- Poll with a deadline to give the child time to work. A live pane at the deadline means Pi is still running, not that it failed.
+- Compare successive captures to distinguish progress from an unchanged screen.
 
-Read what the child is doing: tool calls, questions, errors, and claims. Answer questions with `shell_write`, redirect scope drift, and ask for missing evidence or tests. Continue until `SUBAGENT_DONE` is visible and the response satisfies every requested output.
+Read what the child is doing: tool calls, questions, errors, and claims. Answer questions through literal tmux input, redirect scope drift, and ask for missing evidence or tests. Continue until `SUBAGENT_DONE` is visible and the response satisfies every requested output.
 
 If the marker appears without an adequate result, explain the gap in a follow-up and continue the same conversation.
 
@@ -79,11 +88,13 @@ If the marker appears without an adequate result, explain the gap in a follow-up
 
 Record the result and any changed paths before closing the child. At an idle Pi prompt, shut it down cleanly:
 
-```text
-shell_write({ resource_id: "<id>", text: "/quit\r" })
-shell_wait({ resource_id: "<id>", yield_after: 10 })
+```bash
+tmux -L "$SOCKET" send-keys -l -t "$PANE" -- '/quit'
+tmux -L "$SOCKET" send-keys -t "$PANE" Enter
 ```
 
-Confirm that the resource completed. Then independently inspect cited files, diffs, and test results in the parent session. Treat the child's conclusions as evidence, not authority, and integrate only what survives verification.
+Wait with a deadline and confirm that the pane completed. If clean exit fails, use the interactive shell's graceful-to-force lifecycle. Capture final output and exit state before removing the tmux session.
+
+Then independently inspect cited files, diffs, and test results in the parent session. Treat the child's conclusions as evidence, not authority, and integrate only what survives verification.
 
 **Complete when:** the child process is closed, its useful result has been incorporated, and every delegated claim that affects the parent answer has been checked.
